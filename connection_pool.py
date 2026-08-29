@@ -8,29 +8,29 @@ connection per query: pre-open a small set of persistent connections
 per backend host, hand them out on checkout, take them back on
 checkin, and validate/replace ones the far end silently closed while
 idle. Without this, every single chat-completion call pays a full
-DNS+TCP+TLS handshake — often 100-300ms on its own, before the model
-ever sees a token — because :mod:`urllib.request` opens and tears down
+DNS+TCP+TLS handshake, often 100-300ms on its own, before the model
+ever sees a token, because :mod:`urllib.request` opens and tears down
 a new connection every call.
 
 Two independent pools, both DB-pool-shaped:
 
-1. :class:`HTTPConnectionPool` — one per (host, port, scheme), keeps a
+1. :class:`HTTPConnectionPool`, one per (host, port, scheme), keeps a
    small set of live ``http.client`` connections to a single backend.
    ``acquire()`` / ``release()`` mirror a DB driver's
    checkout/checkin; a connection the server closed while idle (every
-   real DB pool's #1 correctness problem — "stale connection" /
+   real DB pool's #1 correctness problem, "stale connection" /
    HikariCP's `pool_pre_ping`) is detected on first use and replaced
    transparently, once, rather than surfacing as a client error.
 
-2. :data:`SHARED_EXECUTOR` — one process-wide :class:`ThreadPoolExecutor`
+2. :data:`SHARED_EXECUTOR`, one process-wide :class:`ThreadPoolExecutor`
    created ONCE at proxy startup instead of per-request. The old code
    built a fresh ``ThreadPoolExecutor(...)`` inside every call to
-   ``race()`` — the thread-pool equivalent of opening a new DB
+   ``race()``, the thread-pool equivalent of opening a new DB
    connection pool object for every query instead of reusing one
    created at application startup.
 
 Both are zero-dependency stdlib (``http.client``, ``concurrent.futures``,
-``threading``) — no ``requests``/``urllib3``/SQLAlchemy-style pooling
+``threading``), no ``requests``/``urllib3``/SQLAlchemy-style pooling
 library pulled in, consistent with the rest of this repo.
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ class HTTPConnectionPool:
       set for reuse, or closes and discards it if the caller marks it
       unhealthy (a connection error occurred while using it).
     - Idle connections past ``idle_ttl`` are pruned lazily, on the next
-      ``acquire()`` — no background thread needed for a pool this
+      ``acquire()``, no background thread needed for a pool this
       small.
     """
 
@@ -82,7 +82,7 @@ class HTTPConnectionPool:
 
     def _new_connection(self) -> http.client.HTTPConnection:
         if self.use_https:
-            # Default SSL context — matches urllib.request's default
+            # Default SSL context, matches urllib.request's default
             # verification behavior (system trust store, hostname check
             # on). No custom context needed for public HTTPS APIs.
             return http.client.HTTPSConnection(
@@ -96,8 +96,8 @@ class HTTPConnectionPool:
     def acquire(self, timeout: float = 30.0) -> http.client.HTTPConnection:
         """Check out a connection, blocking if the pool is exhausted.
 
-        Raises TimeoutError if none becomes available within *timeout*
-        — the pooled-resource-exhaustion case every DB pool surfaces
+        Raises TimeoutError if none becomes available within *timeout*,
+        the pooled-resource-exhaustion case every DB pool surfaces
         the same way (e.g. HikariCP's `connection is not available,
         request timed out`).
         """
@@ -105,7 +105,7 @@ class HTTPConnectionPool:
         with self._cv:
             while True:
                 now = time.monotonic()
-                # Prune connections idle past their TTL — the far end
+                # Prune connections idle past their TTL, the far end
                 # (or an intermediate load balancer) may have silently
                 # closed them; don't hand out something likely dead.
                 while self._idle and now - self._idle[-1][1] > self.idle_ttl:
@@ -119,7 +119,7 @@ class HTTPConnectionPool:
                     self._in_use_count += 1
                     # Connection creation happens OUTSIDE the lock in
                     # the caller's thread would be nicer, but keeping
-                    # it simple here is fine — TCP connect is the slow
+                    # it simple here is fine, TCP connect is the slow
                     # part, and only fires on a genuine pool-size
                     # increase, not on every acquire.
                     return self._new_connection()
@@ -137,7 +137,7 @@ class HTTPConnectionPool:
 
         *healthy* should be False whenever the caller hit a connection
         -level exception using *conn* (broken pipe, reset, remote
-        disconnected) — never return a connection you're not sure is
+        disconnected), never return a connection you're not sure is
         still good, exactly the DB-pool rule of never trusting a
         connection you didn't just validate.
         """
@@ -157,7 +157,7 @@ class HTTPConnectionPool:
             pass
 
     def stats(self) -> dict:
-        """Snapshot for observability — mirrors what a DB pool's metrics
+        """Snapshot for observability, mirrors what a DB pool's metrics
         endpoint typically exposes (active/idle counts)."""
         with self._cv:
             return {
@@ -169,7 +169,7 @@ class HTTPConnectionPool:
 
 class ConnectionPoolManager:
     """Registry of one :class:`HTTPConnectionPool` per distinct
-    (host, port, scheme) — the equivalent of a DB pool manager keeping
+    (host, port, scheme), the equivalent of a DB pool manager keeping
     one pool per configured database instance, keyed lazily on first
     use rather than requiring upfront registration.
     """
@@ -201,7 +201,7 @@ class ConnectionPoolManager:
             return [p.stats() for p in self._pools.values()]
 
 
-#: Process-wide connection pool manager. One instance is enough — pools
+#: Process-wide connection pool manager. One instance is enough, pools
 #: are keyed per-host internally, so every backend in the proxy shares
 #: this one manager without contending on each other's connections.
 GLOBAL_POOL_MANAGER = ConnectionPoolManager()
@@ -214,14 +214,14 @@ def pooled_request(
     """Issue one HTTP request using a pooled connection, with the
     classic DB-pool "stale connection" retry: if the pooled connection
     turns out to have been closed by the far end while idle (visible
-    only when we try to actually use it — TCP has no reliable way to
+    only when we try to actually use it, TCP has no reliable way to
     detect a half-closed peer without sending data), discard it and
     retry ONCE with a freshly opened connection. A second failure
-    propagates — that's a real error, not a stale-pool artifact.
+    propagates, that's a real error, not a stale-pool artifact.
 
     *base_url*'s own path component (e.g. the ``/zen/v1`` in
-    ``https://opencode.ai/zen/v1``) is preserved and joined with *path*
-    — callers pass the same *base_url* they'd hand to any HTTP client
+    ``https://opencode.ai/zen/v1``) is preserved and joined with *path*:
+    callers pass the same *base_url* they'd hand to any HTTP client
     library, not just a bare ``scheme://host:port``.
 
     Returns (status_code, response_body_bytes). Raises the underlying
@@ -233,7 +233,7 @@ def pooled_request(
     use_https = parsed.scheme == "https"
     host = parsed.hostname or ""
     port = parsed.port or (443 if use_https else 80)
-    # Join base_url's own path (if any) with the request path — a
+    # Join base_url's own path (if any) with the request path, a
     # bare urlsplit(base_url).path discard here was a real bug: a
     # base_url like "https://opencode.ai/zen/v1" has to produce
     # "/zen/v1/chat/completions", not just "/chat/completions".
@@ -258,7 +258,7 @@ def pooled_request(
             http.client.BadStatusLine,
         ) as e:
             # Shape of "the server closed this idle pooled connection
-            # out from under us" — the one class of error a connection
+            # out from under us", the one class of error a connection
             # pool is expected to paper over transparently, same as a
             # DB driver's pre-ping/validation-query retry.
             pool.release(conn, healthy=False)
@@ -273,7 +273,7 @@ def pooled_request(
         except Exception:
             # Any other failure (timeout, DNS, TLS, genuine HTTP error
             # surfaced as an exception) is NOT a stale-connection
-            # artifact — discard the connection defensively (we don't
+            # artifact, discard the connection defensively (we don't
             # know its state) and propagate immediately, no retry.
             pool.release(conn, healthy=False)
             raise

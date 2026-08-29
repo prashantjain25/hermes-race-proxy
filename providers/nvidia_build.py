@@ -3,7 +3,7 @@
 NVIDIA build.nvidia.com provider.
 
 Verified live (Aug 2026):
-- base_url https://integrate.api.nvidia.com/v1 — /models listing
+- base_url https://integrate.api.nvidia.com/v1, /models listing
   and /chat/completions BOTH confirmed working with a real trial key
   during this session (200 OK responses, 83 models listed, correct
   structured-output handling on the exact strict-json_schema payload
@@ -14,7 +14,7 @@ Verified live (Aug 2026):
     - Sign-up grants 1000 free API credits (5000 total available on
       request), not unlimited/recurring free usage.
     - Community-observed rate limit ~40 RPM, ACCOUNT-WIDE (shared
-      across every model called with one key, not per-model) —
+      across every model called with one key, not per-model),
       unpublished, no official SLA, "dependent on model, use-case and
       current overall traffic" per NVIDIA staff on their developer
       forum.
@@ -22,7 +22,7 @@ Verified live (Aug 2026):
       "Production use... requires NVIDIA AI Enterprise."
   Treat any backend built from this provider as a best-effort
   supplementary racer alongside more predictable providers, never as
-  the only backend configured — see the README's "Things I haven't
+  the only backend configured, see the README's "Things I haven't
   solved yet" section.
 """
 from __future__ import annotations

@@ -19,13 +19,13 @@ or in YAML:
     custom_repairs_module: /absolute/path/to/custom_repairs_example.py
 
 The proxy loads this module at startup and calls its register() function,
-which adds your strategy to the shared registry — every backend that
+which adds your strategy to the shared registry, every backend that
 doesn't explicitly restrict its `repairs:` list picks it up automatically,
 alongside the built-in structured-output and token-starvation repairs.
 
 Run this file directly (`python3 custom_repairs_example.py`) for a
 standalone demo of the strategy against fabricated request/response
-pairs — no proxy or network needed.
+pairs, no proxy or network needed.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ class DropUnknownTopLevelFields(RepairStrategy):
         not permitted, field: 'system', value: '...'"
 
     This strategy demonstrates the general shape for "vendor X rejects
-    field Y with error text Z" — the built-in StructuredOutputRelaxation
+    field Y with error text Z", the built-in StructuredOutputRelaxation
     in repairs.py is the same pattern applied to response_format
     specifically. Adjust FIELDS_TO_DROP and the applies() check for your
     own vendor's quirk.
@@ -75,7 +75,7 @@ class DropUnknownTopLevelFields(RepairStrategy):
         err = (result.get("error") or "").lower()
         # Only fire when the error text plausibly matches this vendor's
         # known rejection AND the request actually carries a field we
-        # know how to drop — otherwise let other strategies (or nothing)
+        # know how to drop, otherwise let other strategies (or nothing)
         # handle it.
         mentions_extra_fields = "extra inputs are not permitted" in err
         has_droppable_field = any(f in body for f in self.FIELDS_TO_DROP)
@@ -90,13 +90,13 @@ class DropUnknownTopLevelFields(RepairStrategy):
         return new_body
 
     # resolved() left at the RepairStrategy default (plain HTTP success)
-    # — this strategy doesn't need TokenStarvationBoost's extra check.
+    #, this strategy doesn't need TokenStarvationBoost's extra check.
 
 
 def register(registry: RepairRegistry) -> None:
     """Entry point the proxy calls after loading this module.
 
-    Add as many strategies as you like here — this is the ONLY function
+    Add as many strategies as you like here, this is the ONLY function
     the loader looks for, and it's the only thing you need to define to
     plug in new repair behavior.
     """
@@ -125,4 +125,4 @@ if __name__ == "__main__":
     fixed = strategy.propose(fake_body, fake_result, rung=1)
     print("proposed retry body:", fixed)
     assert fixed is not None and "mcp" not in fixed
-    print("OK — 'mcp' field dropped for retry.")
+    print("OK, 'mcp' field dropped for retry.")

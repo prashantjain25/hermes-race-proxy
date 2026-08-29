@@ -4,24 +4,24 @@ hermes-race-proxy: provider pool
 ====================================
 
 The N×M layer: given a set of enabled providers (each with its own
-connection contract — see ``providers/base.py`` and the concrete
+connection contract, see ``providers/base.py`` and the concrete
 provider modules) and how many models per provider you want racing,
-build one flat list of :class:`~race_proxy_core.Backend` instances —
+build one flat list of :class:`~race_proxy_core.Backend` instances,
 the union of every enabled provider's own top-N ranked models.
 
     total backends = sum(models_per_provider for each enabled provider)
 
 This is the layer ``discovery.py``'s ``discover_backends(cfg)`` calls
 into for a policy like "always include these fixed backends, plus the
-top 2 from each of these 3 providers" — see
+top 2 from each of these 3 providers", see
 ``examples/provider_pool_example.py`` for that wired up as a complete,
 runnable discovery script.
 
-Nothing here is imported by ``race_proxy_core.py`` — this whole package
+Nothing here is imported by ``race_proxy_core.py``, this whole package
 is an OPTIONAL convenience layer for building your own discovery
 policy, same as ``examples/custom_discovery_example.py`` was before
 this refactor (that file's opencode.ai/zen + NVIDIA logic is now
-expressed via this package instead of ad-hoc inline code — see
+expressed via this package instead of ad-hoc inline code, see
 ``examples/provider_pool_example.py`` for the equivalent, rewritten on
 top of ``providers/``).
 """
@@ -42,29 +42,29 @@ class ProviderSlot:
     many of its models should end up racing.
 
     ``api_key=""`` is valid and meaningful for keyless providers (e.g.
-    ``OpenCodeZenProvider``, whose free models need no key at all) —
+    ``OpenCodeZenProvider``, whose free models need no key at all),
     the pool builder does not require every slot to have a key, only
     that ``provider.requires_api_key`` slots that lack one are skipped
     with a clear log line rather than silently producing zero backends.
 
     ``model_ids``: if given, these EXACT models are used verbatim (no
-    discovery/ranking probe) — the "fixed backends" half of an N×M
+    discovery/ranking probe), the "fixed backends" half of an N×M
     policy, e.g. "always include nemotron-3.5-lightning-free and
     laguna-s-2.1-free from opencode-zen." If omitted, ``top_n`` models
     are chosen by :func:`build_pool`'s exhaustive-probe-and-rank step
-    instead — the "discovered" half.
+    instead, the "discovered" half.
     """
     provider: Provider
     api_key: str = ""
     top_n: int = 2
     model_ids: Optional[List[str]] = None
     #: Optional filter narrowing this provider's full catalog before
-    #: ranking — e.g. only "deepseek-ai/", "meta/" prefixed IDs, so an
+    #: ranking, e.g. only "deepseek-ai/", "meta/" prefixed IDs, so an
     #: exhaustive probe doesn't waste calls on embedding/vision-only
     #: models that would never usefully answer a chat prompt.
     candidate_prefixes: tuple = field(default_factory=tuple)
     #: Cap on how many candidates get probed for ranking, independent
-    #: of top_n — keeps an exhaustive scan bounded even against a
+    #: of top_n, keeps an exhaustive scan bounded even against a
     #: provider with hundreds of models in its catalog.
     max_candidates: int = 12
 
@@ -74,7 +74,7 @@ def build_pool(slots: List[ProviderSlot], probe_timeout: float = 20.0) -> list:
 
     For each slot:
     - If ``requires_api_key`` and no key was given, skip it (logged),
-      not raise — one misconfigured provider shouldn't take down the
+      not raise, one misconfigured provider shouldn't take down the
       whole pool when others are fine.
     - If ``model_ids`` is set, build backends for exactly those models,
       no probing.
@@ -86,7 +86,7 @@ def build_pool(slots: List[ProviderSlot], probe_timeout: float = 20.0) -> list:
     Returns the concatenation of every slot's backends, in slot order.
     A slot that fails entirely (listing/probing raised, or nothing
     responded) contributes zero backends and logs a warning rather than
-    aborting the whole pool — same "degrade, don't collapse" contract
+    aborting the whole pool, same "degrade, don't collapse" contract
     ``discovery.py`` documents at the top level.
     """
     from race_proxy_core import Backend  # local import, see providers/base.py's note

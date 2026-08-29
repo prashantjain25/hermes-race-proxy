@@ -1,1 +1,1 @@
-"""hermes-race-proxy provider contracts — see providers/base.py."""
+"""hermes-race-proxy provider contracts, see providers/base.py."""

@@ -3,25 +3,25 @@
 hermes-race-proxy: backend discovery
 ======================================
 
-Optional, pluggable BACKEND SELECTION at proxy startup — kept out of
+Optional, pluggable BACKEND SELECTION at proxy startup, kept out of
 core for the same reason repairs.py's strategies are pluggable: which
 models you probe, how you rank them, which providers you trust with
 your keys, and how many backends you want racing is a deeply personal
 policy call (your own credentials, your own vendor priorities, your own
-reliability tradeoffs) — not something that belongs hardcoded into a
+reliability tradeoffs), not something that belongs hardcoded into a
 project other people install.
 
 DEFAULT BEHAVIOR (no configuration needed): the proxy reads its static
 `backends:` list straight out of config, exactly as it always has. This
 module and its extension point only activate when you explicitly set
-`custom_discovery_module` in your config — if you never touch this,
+`custom_discovery_module` in your config, if you never touch this,
 nothing changes and this file is never imported for anything but its
 loader.
 
-Quick start — bring your own backend-selection policy
+Quick start: bring your own backend-selection policy
 --------------------------------------------------------
 1. Write a standalone .py file anywhere on disk (it does not need to
-   live in this repo — see examples/custom_discovery_example.py for a
+   live in this repo, see examples/custom_discovery_example.py for a
    complete, runnable template implementing a real ranked-selection
    policy: two fixed OpenAI-compatible backends always included, plus
    the top N candidates from an exhaustive startup probe of another
@@ -33,15 +33,15 @@ Quick start — bring your own backend-selection policy
 
    Import `Backend` from `race_proxy_core` and construct/return however
    many Backend instances you want the proxy to race. This runs ONCE at
-   proxy startup, not per-request — expensive probing here (hitting a
+   proxy startup, not per-request, expensive probing here (hitting a
    dozen candidate models to rank them) is fine, it never adds latency
    to a real chat-completion call.
 3. Point your proxy config at it:
 
        {"custom_discovery_module": "/path/to/my_discovery.py", "backends": [...]}
 
-   The static `backends:` list stays in config as a DOCUMENTED FALLBACK
-   — see load_and_run_discovery() below for the exact contract: if
+   The static `backends:` list stays in config as a DOCUMENTED FALLBACK,
+   see load_and_run_discovery() below for the exact contract: if
    `custom_discovery_module` is unset, fails to load, or its
    discover_backends() raises or returns nothing, the proxy logs a
    warning and falls back to the static `backends:` list untouched. A
@@ -72,8 +72,8 @@ def probe_endpoint(
     and how fast it responds.
 
     Returns ``{"ok": bool, "latency": float, "error": str|None}``. A
-    generic, vendor-agnostic building block — a plain chat-completion
-    request with a tiny prompt and small max_tokens, timed — for use
+    generic, vendor-agnostic building block, a plain chat-completion
+    request with a tiny prompt and small max_tokens, timed, for use
     inside your own :func:`discover_backends` implementation instead of
     hand-rolling raw ``urllib`` calls. See
     ``examples/custom_discovery_example.py`` for it in real use,
@@ -113,13 +113,13 @@ def probe_endpoint(
 def load_and_run_discovery(cfg: dict, build_static_backends: Callable[[], List]) -> List:
     """Load ``cfg['custom_discovery_module']`` if set and run its
     ``discover_backends(cfg)``; fall back to *build_static_backends()*
-    on any failure — missing config key, module load error, or an
+    on any failure, missing config key, module load error, or an
     exception raised inside the user's own ``discover_backends``.
 
     *build_static_backends* is a zero-arg callable the caller supplies
     (normally :func:`race_proxy_core.build_backends_from_config` bound
     to *cfg*) rather than this module importing ``race_proxy_core``
-    directly — ``race_proxy_core`` imports THIS module to call this
+    directly, ``race_proxy_core`` imports THIS module to call this
     function, so a direct import back would be circular.
     """
     module_path = cfg.get("custom_discovery_module")

@@ -4,7 +4,7 @@ Example: exhaustive-probe backend discovery, real policy implementation
 =========================================================================
 
 A COMPLETE, RUNNABLE template for the discovery extension point
-(discovery.py). This is NOT core hermes-race-proxy behavior — it's one
+(discovery.py). This is NOT core hermes-race-proxy behavior, it's one
 user's policy, kept as an example precisely because the ranking rules
 here (which providers to trust, how many slots, what "performant"
 means) are personal decisions that don't belong hardcoded into the repo
@@ -27,24 +27,24 @@ Wire it up:
     {
       "custom_discovery_module": "/absolute/path/to/custom_discovery_example.py",
       "nvidia_api_key": "nvapi-...",
-      "backends": [ ... same static list as always — used ONLY if this
+      "backends": [ ... same static list as always, used ONLY if this
                      script fails to load or errors out, per the
                      documented fallback contract in discovery.py ... ]
     }
 
-IMPORTANT — read before using against your own NVIDIA key:
+IMPORTANT, read before using against your own NVIDIA key:
 build.nvidia.com's hosted catalog is a TRIAL service (NVIDIA's own API
 Trial Terms of Service), credit-limited (starts at 1000 free credits),
 rate-limited around ~40 RPM account-wide and undocumented/unstable, and
 explicitly NOT licensed for production traffic per NVIDIA's FAQ
 ("Production use... requires NVIDIA AI Enterprise"). Treat the 2
 NVIDIA-discovered slots as a best-effort supplementary fallback, not a
-guaranteed-available backend — this is exactly why they're 2 of 4 slots
+guaranteed-available backend, this is exactly why they're 2 of 4 slots
 racing alongside 2 fixed, more predictable ones, not the only two
 backends configured.
 
 Run this file directly for a standalone demo of just the probing/ranking
-logic (no proxy needed) — see the __main__ block at the bottom.
+logic (no proxy needed), see the __main__ block at the bottom.
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ NVIDIA_MODELS_URL = f"{NVIDIA_BASE_URL}/models"
 
 # The two always-included opencode.ai/zen backends. Headers match the
 # ones already tuned for this vendor elsewhere in the repo (see
-# race_proxy.local.json in the README) — some free tiers care about a
+# race_proxy.local.json in the README), some free tiers care about a
 # real-looking User-Agent / Referer.
 FIXED_BACKENDS_CONFIG = [
     {
@@ -98,7 +98,7 @@ FIXED_BACKENDS_CONFIG = [
 #: How many of NVIDIA's catalog models to keep after ranking.
 NVIDIA_DISCOVERED_SLOTS = 2
 
-#: Cap on how many candidates to probe in parallel — NVIDIA's free tier
+#: Cap on how many candidates to probe in parallel, NVIDIA's free tier
 #: is ~40 RPM ACCOUNT-WIDE (shared across every model on one key), so
 #: probing the entire 80+ model catalog at full concurrency on every
 #: proxy startup would itself burn a meaningful chunk of that budget.
@@ -106,7 +106,7 @@ NVIDIA_DISCOVERED_SLOTS = 2
 #: actually care about racing, rather than raising this.
 MAX_CANDIDATES_TO_PROBE = 12
 
-#: Only probe models whose ID starts with one of these — keeps the
+#: Only probe models whose ID starts with one of these, keeps the
 #: exhaustive scan scoped to families you'd actually want racing
 #: (fast/cheap general chat models), not e.g. embedding-only or
 #: vision-only models that would never usefully answer a
@@ -119,7 +119,7 @@ def _list_nvidia_models(api_key: str, timeout: float = 15.0) -> List[str]:
 
     Returns model IDs matching CANDIDATE_MODEL_PREFIXES, capped at
     MAX_CANDIDATES_TO_PROBE. Raises on a hard failure (bad key, network
-    down) — the caller (discover_backends) is expected to let that
+    down), the caller (discover_backends) is expected to let that
     propagate so the documented discovery.py fallback-to-static-config
     contract kicks in.
     """
@@ -138,7 +138,7 @@ def _rank_nvidia_candidates(api_key: str, candidates: List[str]) -> List[str]:
     check first" step) and return model IDs ordered fastest-first,
     successes only.
 
-    Uses discovery.probe_endpoint — the same generic real-HTTP-call
+    Uses discovery.probe_endpoint, the same generic real-HTTP-call
     helper any custom discovery script can reuse, not vendor-specific
     code duplicated here.
     """
@@ -170,10 +170,10 @@ def discover_backends(cfg: dict) -> List[Backend]:
 
     Builds the 2 fixed opencode.ai/zen backends unconditionally, then
     exhaustively probes NVIDIA's catalog and adds the top
-    NVIDIA_DISCOVERED_SLOTS fastest, successfully-responding models —
+    NVIDIA_DISCOVERED_SLOTS fastest, successfully-responding models,
     for a total of up to 4 backends racing. If NVIDIA probing fails
     entirely (bad/missing key, network down, no candidates respond),
-    this still returns the 2 fixed backends rather than raising — a
+    this still returns the 2 fixed backends rather than raising, a
     degraded 2-way race is better than no proxy at all, and the
     documented discovery.py contract only falls back to the STATIC
     `backends:` config on a raised exception, not a partial result.
@@ -183,7 +183,7 @@ def discover_backends(cfg: dict) -> List[Backend]:
     nvidia_key = cfg.get("nvidia_api_key", "")
     if not nvidia_key:
         print(
-            "custom_discovery_example: no nvidia_api_key in config — "
+            "custom_discovery_example: no nvidia_api_key in config, "
             "skipping NVIDIA discovery, using the 2 fixed backends only",
             file=sys.stderr,
         )
@@ -194,7 +194,7 @@ def discover_backends(cfg: dict) -> List[Backend]:
         ranked = _rank_nvidia_candidates(nvidia_key, candidates)
     except Exception as e:
         print(
-            f"custom_discovery_example: NVIDIA discovery failed ({e}) — "
+            f"custom_discovery_example: NVIDIA discovery failed ({e}), "
             f"using the 2 fixed backends only",
             file=sys.stderr,
         )

@@ -21,7 +21,7 @@ Wire it up exactly like the old example:
       "backends": [ ... unchanged static fallback list ... ]
     }
 
-Only ``nvidia_api_key`` needs to be set for this exact policy — the
+Only ``nvidia_api_key`` needs to be set for this exact policy, the
 OpenRouter/DeepInfra config keys are read and passed through but their
 slots are commented out below by default (both REQUIRE a paid/keyed
 account for actual chat completions per providers/openrouter.py and
@@ -29,7 +29,7 @@ providers/deepinfra.py's docstrings; uncomment and supply a real key to
 enable either).
 
 IMPORTANT: build.nvidia.com is a credit-limited TRIAL service, not a
-stable free tier — see providers/nvidia_build.py's docstring and the
+stable free tier, see providers/nvidia_build.py's docstring and the
 README's "Things I haven't solved yet" section before relying on it for
 anything beyond best-effort supplementary racing.
 
@@ -54,7 +54,7 @@ from providers.pool import ProviderSlot, build_pool
 def discover_backends(cfg: dict):
     """The entry point discovery.py's loader looks for."""
     slots = [
-        # Fixed: always race these two exact opencode.ai/zen models —
+        # Fixed: always race these two exact opencode.ai/zen models,
         # no probing needed, no key needed (keyless free tier).
         ProviderSlot(
             provider=OpenCodeZenProvider(),

@@ -7,7 +7,7 @@ A tiny local OpenAI-compatible HTTP proxy that fans a single
 `/v1/chat/completions` request out to N upstream backends in parallel and
 returns whichever finishes first with a usable (non-empty) response. Also
 repairs a class of fixable failures per-backend before giving up on it
-(structured-output rejections, reasoning-token starvation) — see
+(structured-output rejections, reasoning-token starvation), see
 ``repairs.py`` for that logic and how to add your own.
 
 Built for Hermes Agent auxiliary-task routing (skills_hub, mcp, approval,
@@ -23,10 +23,10 @@ directly at a single backend.
 This file is a thin CLI wrapper. The actual logic lives in two other
 modules, split by concern so each is independently reusable/extensible:
 
-  race_proxy_core.py  — HTTP mechanics: making requests, racing backends,
+  race_proxy_core.py , HTTP mechanics: making requests, racing backends,
                          serving the endpoint. No knowledge of *why* a
                          response might be broken.
-  repairs.py           — WHY a response might be broken and how to fix
+  repairs.py          , WHY a response might be broken and how to fix
                           it, behind one small RepairStrategy interface.
                           This is where you plug in support for your own
                           model/vendor's failure shape without editing
@@ -39,7 +39,7 @@ Usage:
     python3 race_proxy.py --config race_proxy.yaml
     # or environment-var driven, see README
 
-Config format (YAML or JSON) — see race_proxy.example.json/.yaml for a
+Config format (YAML or JSON), see race_proxy.example.json/.yaml for a
 ready-to-copy template:
     host: 127.0.0.1
     port: 8977
@@ -64,7 +64,7 @@ ready-to-copy template:
         api_key: ""
         headers: {}
 
-Security note: this proxy has NO authentication of its own by default —
+Security note: this proxy has NO authentication of its own by default,
 it is meant to be bound to 127.0.0.1 and used locally. Do not expose it
 on a public interface without adding your own auth layer.
 """

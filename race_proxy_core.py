@@ -8,7 +8,7 @@ backends in parallel, and serving an OpenAI-compatible
 ``/v1/chat/completions`` endpoint that fronts them.
 
 This module deliberately knows NOTHING about why a particular backend's
-response might be broken, or how to fix it — that knowledge lives in
+response might be broken, or how to fix it, that knowledge lives in
 ``repairs.py`` behind the :class:`~repairs.RepairStrategy` interface.
 ``Backend.call()`` below asks its :class:`~repairs.RepairRegistry` "given
 this failed/unusable result, what should I retry with?" and does not
@@ -18,10 +18,10 @@ that's the same for everyone, and ``repairs.py`` (plus whatever a user
 adds via ``custom_repairs_module``) is the part that varies per vendor.
 
 Two resource pools, shared process-wide instead of created per request
-(same reasoning a database client uses for connection pooling — pay
+(same reasoning a database client uses for connection pooling, pay
 setup cost once at startup, not per query):
 
-- HTTP connections to each backend (``connection_pool.py`` —
+- HTTP connections to each backend (``connection_pool.py``,
   ``pooled_request``): avoids a fresh DNS+TCP+TLS handshake on every
   single chat-completion call.
 - The thread pool that races backends in parallel
@@ -66,7 +66,7 @@ attempts too short to ever succeed."""
 
 MAX_CONCURRENT_RACE_WORKERS = 32
 """Ceiling on the SHARED thread pool's worker count (see _SHARED_EXECUTOR
-below) — not a per-request limit. A DB connection pool is sized once for
+below), not a per-request limit. A DB connection pool is sized once for
 the whole application, not re-created per query; this is the same idea
 applied to the thread pool that runs backend racing. Sized generously
 above any realistic backend count (racing 4-8 backends per request,
@@ -84,7 +84,7 @@ def _get_shared_executor() -> "concurrent.futures.ThreadPoolExecutor":
 
     This is the thread-pool equivalent of a database connection pool
     created once at application startup rather than opened fresh for
-    every query — the old code built a brand-new ThreadPoolExecutor
+    every query, the old code built a brand-new ThreadPoolExecutor
     inside every single race() call, paying thread-creation overhead on
     every incoming HTTP request instead of once at proxy startup.
     """
@@ -108,8 +108,8 @@ class Backend:
 
     Owns the raw HTTP mechanics (:meth:`_do_request`) and delegates all
     retry/repair decisions to its ``repairs`` registry (see
-    ``repairs.py``). Swap in a different registry — via the ``repairs``
-    constructor argument, or per-backend in config — to change which
+    ``repairs.py``). Swap in a different registry, via the ``repairs``
+    constructor argument, or per-backend in config, to change which
     repairs run for this backend without touching this class.
     """
 
@@ -132,13 +132,13 @@ class Backend:
 
     def _do_request(self, body: dict, timeout: float) -> dict:
         """One HTTP attempt against this backend, over a pooled
-        connection (see connection_pool.py — same acquire/use/release
+        connection (see connection_pool.py, same acquire/use/release
         shape as checking a connection out of a DB pool).
 
         Returns a dict: {"ok": bool, "backend": name, "latency": float,
         "data": <parsed json or None>, "error": <str or None>,
         "status_code": <int or None>}. This is the ONLY method in this
-        file that knows how to talk HTTP to a backend — everything above
+        file that knows how to talk HTTP to a backend, everything above
         it (repair ladders, racing) operates on this dict shape only.
         """
         path = "/chat/completions"
@@ -178,7 +178,7 @@ class Backend:
 
         The original attempt and every possible repair retry share one
         overall *timeout* budget, tracked as a deadline rather than
-        divided into fixed slices upfront — some repairs (a boosted
+        divided into fixed slices upfront, some repairs (a boosted
         max_tokens against a slow reasoning model, observed 20-30s for
         nemotron-3.5-lightning-free) legitimately need more of the
         budget than a naive 1/N split would give them. See
@@ -216,7 +216,7 @@ def _response_is_usable(data: dict, require_finish_reason: Optional[str]) -> boo
     """Race-level usability gate: does this WINNING candidate have real
     content and (optionally) the expected finish_reason?
 
-    This is deliberately simpler than anything in repairs.py — it's the
+    This is deliberately simpler than anything in repairs.py, it's the
     bar a response has to clear to WIN the race, not a diagnosis of why a
     losing response failed. A backend that comes back empty here just
     loses the race silently; the repair lader inside Backend.call()
@@ -240,16 +240,16 @@ def race(backends: list[Backend], payload: dict, timeout: float, require_finish_
     """Fire all backends in parallel; return the first USABLE result.
 
     Each backend has already run its own repair ladder internally (see
-    Backend.call) before its result ever reaches this function — so a
+    Backend.call) before its result ever reaches this function, so a
     backend that "wins" here already survived both its own retries AND
     this race-level usability check.
 
-    Returns as soon as a winner is found — does NOT wait for slower
+    Returns as soon as a winner is found, does NOT wait for slower
     losing backends to finish their own (possibly much longer, e.g. a
     repair-ladder retry against a slow model) attempts.
 
     Uses the process-wide shared executor (_get_shared_executor) rather
-    than creating a new ThreadPoolExecutor per call — same reasoning as
+    than creating a new ThreadPoolExecutor per call, same reasoning as
     a database connection pool created once at startup rather than
     opened fresh per query. Because the pool is shared and long-lived,
     we must NOT call its `.shutdown()` here (that would tear down the
@@ -278,7 +278,7 @@ def race(backends: list[Backend], payload: dict, timeout: float, require_finish_
     except concurrent.futures.TimeoutError:
         pass
 
-    # No usable winner — surface the most informative failure.
+    # No usable winner, surface the most informative failure.
     wall_clock = time.time() - t_start
     logger.warning("race: no usable winner after %.2fs, %d attempt(s) seen", wall_clock, len(results_seen))
     return {
@@ -315,7 +315,7 @@ class RaceProxyHandler(BaseHTTPRequestHandler):
                 "timeout": self.timeout,
                 # Connection-pool stats per host, same shape a DB pool's
                 # metrics endpoint typically exposes (active/idle
-                # counts) — useful for spotting exhaustion before it
+                # counts), useful for spotting exhaustion before it
                 # surfaces as a client-visible TimeoutError.
                 "connection_pools": GLOBAL_POOL_MANAGER.stats(),
             })
@@ -411,12 +411,12 @@ def run_server(cfg: dict, host: Optional[str] = None, port: Optional[int] = None
     its result is used; otherwise (or on any failure in a custom
     module) the static ``backends:`` list from config is used, exactly
     as before this feature existed. Discovery is a startup-time cost
-    only — it never runs per-request, so an exhaustive probe of a dozen
+    only, it never runs per-request, so an exhaustive probe of a dozen
     candidate models to pick the fastest few is a reasonable thing to do
     there.
 
     Returns the (already-``serve_forever``-ready but not yet serving)
-    server object — callers own the run loop, so this is usable both by
+    server object, callers own the run loop, so this is usable both by
     the CLI entrypoint (``race_proxy.py``) and by anything embedding the
     proxy as a library.
     """
@@ -440,7 +440,7 @@ def run_server(cfg: dict, host: Optional[str] = None, port: Optional[int] = None
 
     server = ThreadingHTTPServer((host, port), RaceProxyHandler)
     logger.info(
-        "hermes-race-proxy listening on http://%s:%s — racing backends: %s (timeout=%ss)",
+        "hermes-race-proxy listening on http://%s:%s, racing backends: %s (timeout=%ss)",
         host, port, ", ".join(b.name for b in backends), timeout,
     )
     return server
