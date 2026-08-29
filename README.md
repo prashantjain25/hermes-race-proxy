@@ -5,6 +5,25 @@ LLM backends against each other and hands back whichever one answers first
 with something usable. I built it for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 auxiliary-task routing, but it works with any OpenAI-compatible client.
 
+## Project layout
+
+The logic is split across a few small files, each independently
+extensible without touching the others:
+
+| File | What it is |
+|---|---|
+| `race_proxy.py` | Thin CLI entrypoint (arg parsing, logging setup). |
+| `race_proxy_core.py` | HTTP mechanics: making a request, racing backends, serving the endpoint. Knows nothing about *why* a response might be broken. |
+| `repairs.py` | *Why* a response might be broken and how to fix it, behind a `RepairStrategy` interface. Bring your own vendor-specific fix without editing anything else — see "Bring your own repair" below. |
+| `discovery.py` | Optional backend-SELECTION extension point: probe/rank candidate models at proxy startup instead of hardcoding a static list. Off by default. |
+| `connection_pool.py` | HTTP connection pooling (persistent per-backend connections, reused across requests) and the shared worker thread pool — the same "pay setup cost once, not per request" pattern a database client uses for connection pooling. |
+| `examples/custom_repairs_example.py` | Runnable template for plugging in your own repair strategy. |
+| `examples/custom_discovery_example.py` | Runnable template for plugging in your own backend-discovery policy (a real one: 2 fixed backends + top-2 from an exhaustive catalog probe). |
+
+Default behavior with none of the extension points configured is
+unchanged from a plain static `backends:` list in config — everything
+above is opt-in.
+
 ## Why this exists
 
 I was digging into how Hermes routes its auxiliary tasks (skill selection,
@@ -44,7 +63,7 @@ combination of paid, free, local, or hosted backends you want to race.
 Swap the placeholders in `race_proxy.example.json` (or `.yaml`) for your
 own providers and models.
 
-## Structured-output and token-starvation repair
+## Structured-output and token-starvation repair (built-in strategies)
 
 This came out of a real, reproducible failure: I was routing an
 OpenAI-compatible request with `response_format: {"type": "json_schema",
@@ -141,6 +160,83 @@ in your config if you'd rather see the raw failure:
   "repair_structured_output": true,
   "repair_token_starvation": true
 }
+```
+
+## Bring your own repair strategy
+
+The two built-in repairs above live in `repairs.py` behind a small
+interface (`RepairStrategy`), not hardcoded into the request-handling
+code. If you hit a DIFFERENT vendor's failure shape — some other
+rejected field, some other truncation pattern — you don't need to fork
+this repo or send a PR to get it fixed for your setup:
+
+1. Write a standalone `.py` file anywhere on disk. Subclass
+   `RepairStrategy` from `repairs.py`, implement `applies()` (does this
+   result match my failure shape?) and `propose()` (what request body
+   should I retry with?).
+2. Define a module-level `register(registry) -> None` that calls
+   `registry.register(YourStrategy())`.
+3. Point your proxy config at it: `"custom_repairs_module":
+   "/path/to/my_repairs.py"`.
+
+See `examples/custom_repairs_example.py` for a complete, runnable
+template (a real strategy: dropping unknown top-level fields some
+vendors reject with a strict-validator 400).
+
+## Bring your own backend-discovery policy
+
+The static `backends:` list in config is still the default and always
+works. But which models to race, how many, from which providers, and
+how to rank them at startup is a personal policy call — not something
+that belongs hardcoded into a project other people install. `discovery.py`
+is the extension point for that:
+
+1. Write a standalone `.py` file. Define a module-level
+   `discover_backends(cfg: dict) -> list[Backend]` that returns however
+   many `Backend` instances you want racing — probe a provider's model
+   catalog, rank by measured latency, mix providers, whatever your
+   policy is.
+2. Point your config at it: `"custom_discovery_module":
+   "/path/to/my_discovery.py"`.
+3. This runs ONCE at proxy startup, not per-request — an exhaustive
+   probe of a dozen candidate models to pick the fastest few is a
+   reasonable thing to do here, since it never adds latency to a real
+   chat-completion call later.
+4. If your module fails to load, raises, or returns nothing, the proxy
+   falls back to the static `backends:` list in config and logs a
+   warning — a broken discovery script degrades to "no discovery,"
+   never to "no backends at all."
+
+See `examples/custom_discovery_example.py` for a complete, runnable
+policy: 2 fixed backends always included, plus the top 2 fastest models
+from an exhaustive startup probe of another provider's full catalog
+(candidates run in parallel, ranked by measured response latency, only
+successful responders kept).
+
+## Connection pooling
+
+Every backend gets a small pool of persistent HTTP connections
+(`connection_pool.py`) instead of opening a fresh TCP+TLS handshake on
+every single chat-completion call — the same pattern a database client
+uses for connection pooling: pay setup cost once, reuse the connection
+across requests, replace one transparently if the far end silently
+closed it while idle. The thread pool that races backends in parallel is
+also created once at proxy startup and reused for the life of the
+process, not spun up fresh inside every request.
+
+Pool stats are exposed on the health endpoint for observability, the
+same shape a database pool's metrics endpoint typically shows:
+
+```bash
+curl -s http://127.0.0.1:8977/health | python3 -m json.tool
+# {
+#   "status": "ok",
+#   "backends": ["ling", "nemotron", "laguna"],
+#   "timeout": 90,
+#   "connection_pools": [
+#     {"host": "opencode.ai", "port": 443, "in_use": 1, "idle": 2, "max_size": 8}
+#   ]
+# }
 ```
 
 ## What I cared about while building this
@@ -252,6 +348,16 @@ choice (systemd, launchd, pm2, whatever you already use) keep it running.
   `MIN_SAFE_MAX_TOKENS` (2000) is a global default across all backends.
   A model with unusually heavy reasoning overhead might still starve at
   2000 — raise the constant if you hit that.
+- **Custom discovery scripts that call trial/credit-limited APIs need
+  their own judgment about production suitability.** The example
+  discovery script (`examples/custom_discovery_example.py`) probes
+  NVIDIA's build.nvidia.com hosted catalog, which is explicitly a TRIAL
+  service under NVIDIA's own API Trial Terms of Service — credit-limited,
+  rate-limited around ~40 RPM account-wide and undocumented, and NOT
+  licensed for production traffic per NVIDIA's own FAQ. Treat any
+  discovered backend from a trial/free tier as a best-effort
+  supplementary racer, not a guaranteed-available backend — race it
+  alongside more predictable fixed backends, not alone.
 - I tested this by hand against a live free-tier endpoint. There's no
   automated test suite yet, so treat it accordingly until one exists.
 
