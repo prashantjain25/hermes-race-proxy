@@ -4,3 +4,4 @@ __pycache__/
 *.log
 race_proxy.local.json
 race_proxy.local.yaml
+reddit_post_draft.txt

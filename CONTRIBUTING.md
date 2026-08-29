@@ -1,90 +1,87 @@
 # Contributing to hermes-race-proxy
 
-Thanks for considering a contribution. This is a small, single-file tool by
-design, so contributions that keep it that way are especially welcome.
+Thanks for taking a look. This is a small, single-file tool on purpose, so
+contributions that keep it that way are the easiest to merge.
 
 ## Getting started
 
 1. Fork the repo and clone your fork.
-2. No build step and no required dependencies. Run it directly:
+2. No build step, nothing to install. Just run it:
    ```bash
    python3 race_proxy.py --config race_proxy.example.json --verbose
    ```
 3. Make your change.
-4. Test it manually against real backends (or mocked ones, see "Testing"
-   below) before opening a PR. There is no CI yet, so manual verification in
-   the PR description matters.
+4. Test it against real backends (or mocked ones, see Testing below) before
+   opening a PR. There's no CI yet, so what you show in the PR description
+   is what I have to go on.
 
-## Project philosophy
+## What I care about here
 
-- **Zero required dependencies stays non-negotiable.** PyYAML is optional
-  and only needed for YAML configs; JSON config must keep working with
-  nothing beyond the Python 3 standard library. Do not add a hard dependency
-  without discussing it in an issue first.
-- **Single file is a feature, not a limitation.** `race_proxy.py` is meant
-  to be readable top to bottom in a few minutes and easy to vendor into
-  another project. Prefer keeping it that way over splitting into a package,
-  unless a change genuinely cannot be done cleanly otherwise.
-- **Honest documentation over marketing.** If a change introduces a new
-  limitation or tradeoff, document it in the README's "Known limitations"
-  section in the same PR. Do not let a caveat go undocumented.
-- **No telemetry, no phone-home behavior, ever.** This tool proxies your
-  requests to backends you configure. It must never contact anything else.
+I want this to stay small enough that anyone can read the whole thing in a
+few minutes, so a few things I'll push back on:
 
-## What's welcome
+- Adding a dependency you don't strictly need. PyYAML is optional and only
+  matters if you want YAML configs; JSON has to keep working with nothing
+  beyond the standard library.
+- Splitting the single file into a package. It's meant to be easy to read
+  top to bottom, and easy to just drop into another project.
+- Undocumented tradeoffs. If your change adds a new limitation, put it in
+  the README's "Things I haven't solved yet" section in the same PR. Don't
+  make me find it later.
+- Anything that phones home. This tool only ever talks to the backends you
+  configure. That's not up for debate.
 
-- Bug fixes with a clear repro (a `curl` command and expected vs. actual
-  response is enough).
-- Streaming support (`stream: true` passthrough), currently unsupported and
-  flagged as a known limitation.
-- An automated test suite (pytest, mocking the backend HTTP calls); there
-  isn't one yet and it would meaningfully raise confidence in changes.
-- Documentation fixes and clarifications.
-- Additional config validation with clear error messages (e.g. catching a
-  missing `backends` list or malformed entry before the server starts,
-  rather than failing on the first request).
+## What's genuinely welcome
 
-## What to discuss first (open an issue before a PR)
+- Bug fixes. A `curl` command showing expected vs. actual is enough of a
+  repro.
+- Streaming support (`stream: true` passthrough). This is the biggest gap
+  right now and I'd like to see it fixed.
+- An automated test suite, mocking the backend HTTP calls. There isn't one
+  yet and it would make me a lot more comfortable merging changes.
+- Doc fixes and clarifications.
+- Better config validation, ideally catching a missing `backends` list or a
+  malformed entry before the server even starts, instead of failing on the
+  first request that comes in.
+
+## Talk to me first (open an issue before a PR)
 
 - Adding a required dependency.
-- Adding authentication/authorization to the proxy itself (currently
-  intentionally out of scope; the tool assumes a trusted local network).
-- Splitting the single file into multiple modules.
-- Any change to the race semantics (what counts as a "usable" response, how
-  ties are broken, etc.) since other users may depend on the current
-  behavior.
+- Adding auth to the proxy itself. Right now it's intentionally out of
+  scope; this thing assumes you're running it somewhere you trust.
+- Splitting the file up.
+- Changing what counts as a "usable" response, or how a race gets decided.
+  People may already be relying on the current behavior.
 
 ## Code style
 
-- Standard library only unless explicitly agreed via an issue.
+- Standard library only, unless we've talked about it in an issue first.
 - Type hints on public functions.
-- Keep comments that explain *why*, not just *what*; the codebase already
-  does this and new code should match.
-- No credentials, API keys, model names, or endpoint URLs specific to any
-  one provider should be hardcoded anywhere in the repo, including examples.
-  Use `race_proxy.example.json`/`.yaml` with generic placeholder names
-  (`backend-a`, `your-model-name`, `your-provider.example.com`) for all
-  documentation and examples.
+- Comments should explain why, not just what. The existing code tries to do
+  this and new code should match.
+- No real API keys, model names, or provider URLs anywhere in the repo,
+  including examples. Use the generic placeholders already in
+  `race_proxy.example.json`/`.yaml` (`backend-a`, `your-model-name`,
+  `your-provider.example.com`) in docs and examples too.
 
 ## Testing
 
-There is no automated test suite yet (see "What's welcome" above). Until one
-exists, please include in your PR description:
+No automated suite yet (see above). Until there is one, please include in
+your PR:
 
-- The exact command you ran to start the proxy.
-- The exact `curl` (or equivalent) request(s) you used to verify the change.
-- The relevant response output, or a description of the observed behavior.
+- The command you used to start the proxy.
+- The exact `curl` (or similar) request you used to test the change.
+- What you actually saw come back.
 
 ## Reporting security issues
 
-This tool has no built-in authentication by design and is meant for local
-use only (see README's "Known limitations"). If you find a way the proxy
-could leak configured credentials to an unintended party (e.g. via logs,
-error messages, or a request it shouldn't be able to make), please open an
-issue describing it. There is no dedicated security contact at this time;
-public issues are fine for this project's threat model.
+This proxy has no built-in auth by design and is meant for local use only.
+If you find a way it could leak configured credentials somewhere it
+shouldn't (logs, error messages, an unintended request), open an issue
+describing it. There's no dedicated security contact right now; a public
+issue is fine given what this tool is and isn't meant to do.
 
 ## License
 
-By contributing, you agree your contributions are licensed under the
+By contributing, you're agreeing your changes are licensed under this
 project's MIT license (see [LICENSE](LICENSE)).

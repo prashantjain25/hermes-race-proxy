@@ -1,75 +1,63 @@
 # hermes-race-proxy
 
-A tiny, zero-dependency local HTTP proxy that races multiple OpenAI-compatible
-LLM backends against each other and returns whichever finishes first with a
-**usable** completion. Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-auxiliary-task routing, but works with any OpenAI-compatible client.
+A tiny, zero-dependency local HTTP proxy that races a few OpenAI-compatible
+LLM backends against each other and hands back whichever one answers first
+with something usable. I built it for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+auxiliary-task routing, but it works with any OpenAI-compatible client.
 
-## Why
+## Why this exists
 
-Hermes Agent's `auxiliary.<task>.fallback_chain` config is **strictly
-sequential**: try the primary model, and only on failure/timeout try the next
-entry in the chain. That's the right default for most tasks, but for
-latency-sensitive auxiliary calls (skill routing, MCP tool selection,
-approval judging) that fire on every turn, a sequential retry means you pay
-the primary's full timeout before ever trying the fallback.
+I was digging into how Hermes routes its auxiliary tasks (skill selection,
+MCP tool routing, approval checks, that kind of thing) and noticed
+`auxiliary.<task>.fallback_chain` only tries backends one at a time: hit the
+primary, and only if that fails or times out does it move to the next one
+in the list. That's fine for most tasks. It's annoying for the ones that
+fire on every single turn, where you end up eating the primary's full
+timeout before the fallback even gets a shot.
 
-This proxy instead fires **all configured backends in parallel** and returns
-the first one that comes back with real content, cutting worst-case latency
-down to whichever backend is fastest right now, instead of a fixed
-sequential wait.
+So instead of waiting on one, then the other, this proxy just fires the
+request at everything you've configured at the same time and takes whoever
+answers first. Worst case you're bound by your slowest backend's timeout
+instead of the sum of all of them.
 
-## How the parallelism works
+## How the race actually works
 
-The core idea is a request race, not a queue:
+1. A request comes in to `/v1/chat/completions`.
+2. The proxy sends that same request to every backend you've configured, all
+   at once, each on its own thread.
+3. As answers come back, the proxy checks whether they're actually usable.
+   A response only counts if it has real content and, by default,
+   `finish_reason: "stop"`. This matters more than it sounds like it should:
+   some free-tier reasoning models will happily burn their whole
+   `max_tokens` budget on invisible reasoning and hand you back an empty
+   string. The proxy treats that as a non-answer and keeps waiting on
+   whoever else is still in flight.
+4. First real answer wins. It gets sent back to the client tagged with
+   `_race_proxy.winner` and `_race_proxy.latency`, so you can see who won
+   and by how much.
+5. Everyone else still running just finishes on their own thread and gets
+   thrown away. Nothing is delayed waiting for the losers.
 
-1. A single incoming `/v1/chat/completions` request arrives at the proxy.
-2. The proxy copies that request and fires it at **every configured backend
-   at once**, each on its own thread (`concurrent.futures.ThreadPoolExecutor`).
-   Nothing is sent sequentially and nothing waits for another backend to
-   fail first.
-3. As responses stream back, the proxy inspects each one as it arrives. A
-   response only counts as a win if it has actual content and (by default)
-   `finish_reason: "stop"`. Fast-but-empty responses (see the
-   reasoning-model note below) are discarded, not accepted.
-4. The **first backend to produce a usable answer wins**. Its response is
-   returned to the client immediately, tagged with `_race_proxy.winner` and
-   `_race_proxy.latency` for observability.
-5. Every other in-flight request is left to finish on its own thread and its
-   result is simply discarded, no request is fired late, so the proxy never
-   trades throughput for latency; it always races everything from the same
-   starting line.
+I tested this against a keyless free-tier endpoint running two different
+models, but there's nothing model-specific baked in. Point it at whatever
+combination of paid, free, local, or hosted backends you want to race.
+Swap the placeholders in `race_proxy.example.json` (or `.yaml`) for your
+own providers and models.
 
-This turns "N backends, sequential fallback, worst-case = sum of every
-backend's timeout" into "N backends, parallel race, worst-case = the
-slowest single backend's timeout, and the common case = whichever backend
-happens to be fastest for that specific request." It is a simple pattern
-(no queueing, no load balancing, no smart routing) precisely so it stays
-auditable in one file.
+## What I cared about while building this
 
-It was built and tested against a keyless OpenAI-compatible free-tier
-endpoint racing two different models, but works with any OpenAI-compatible
-`/v1/chat/completions` endpoint. Mix free and paid backends, local and
-hosted, whatever you want to race. Swap in whichever providers/models you use
-in `race_proxy.example.json` (or `.yaml`); nothing in this repo is tied to a
-specific vendor.
-
-## Key design decisions
-
-- **Reasoning-model aware.** Some free-tier models are hidden-reasoning
-  models that can burn their entire `max_tokens` budget on invisible
-  reasoning and return empty `content` with `finish_reason: "length"`. The
-  proxy treats that as **not a valid win** and keeps waiting on the other
-  backend(s) rather than serving empty text as if it were a real answer.
-  Configure `require_finish_reason: stop` (default) to enforce this.
-- **Zero required dependencies.** Pure Python 3 stdlib
-  (`http.server`, `concurrent.futures`, `urllib`). YAML config is optional
-  (`pip install pyyaml`); JSON config works with no extra installs at all.
-- **No new attack surface beyond your existing credentials.** The proxy does
-  not store or generate credentials; it forwards whatever `api_key`/headers
-  you put in its config, exactly as you would configure any HTTP client. It
-  binds to `127.0.0.1` by default and has no auth of its own, so do not
-  expose it on a public interface without adding one.
+- **Reasoning models shouldn't be able to "win" with garbage.** See the
+  empty-content problem above. `require_finish_reason: stop` (on by
+  default) catches most of it.
+- **No dependencies you didn't already have.** Pure Python 3 standard
+  library: `http.server`, `concurrent.futures`, `urllib`. YAML config needs
+  `pyyaml` if you want it, but JSON works out of the box with nothing extra
+  to install.
+- **It shouldn't add a new way to leak your credentials.** The proxy
+  doesn't generate or store anything; it just forwards whatever
+  `api_key`/headers you put in the config, same as any HTTP client would.
+  It binds to `127.0.0.1` by default and has zero auth of its own, so don't
+  put it on a public interface without adding some yourself.
 
 ## Quickstart
 
@@ -89,8 +77,8 @@ curl -s -X POST http://127.0.0.1:8977/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Say hi in 3 words"}],"max_tokens":1500}'
 ```
 
-The response is a normal OpenAI-shape `chat.completion` object, with one
-extra non-standard field for observability:
+You get back a normal OpenAI-shape `chat.completion` object, plus one extra
+field so you can see who won:
 
 ```json
 {
@@ -99,7 +87,7 @@ extra non-standard field for observability:
 }
 ```
 
-## Wiring into Hermes Agent
+## Wiring it into Hermes Agent
 
 Point an auxiliary task's `base_url` at the proxy instead of the real
 provider:
@@ -109,13 +97,12 @@ auxiliary:
   skills_hub:
     provider: custom
     base_url: http://127.0.0.1:8977/v1
-    model: race-proxy   # ignored by the proxy; it substitutes each
-                          # backend's real model name per config
+    model: race-proxy   # ignored, the proxy swaps in each backend's real
+                          # model name from its own config
 ```
 
-Run the proxy as a background service (see `race_proxy.example.json` for the
-backend list) before starting Hermes, or manage it with your process
-supervisor of choice (systemd, launchd, pm2, etc.).
+Start the proxy before you start Hermes, and let your process supervisor of
+choice (systemd, launchd, pm2, whatever you already use) keep it running.
 
 ## Config reference
 
@@ -139,26 +126,24 @@ supervisor of choice (systemd, launchd, pm2, etc.).
 
 | Field | Meaning |
 |---|---|
-| `host` / `port` | Local bind address for the proxy's HTTP server. |
-| `timeout` | Per-race wall-clock budget in seconds. If no backend returns usable content within this window, the proxy returns a `502`. |
-| `require_finish_reason` | Set to `null`/omit to accept any completion, even truncated ones. Default `"stop"` rejects `finish_reason: "length"` results (common failure mode with reasoning models given too small a `max_tokens`). |
-| `backends[].api_key` | Empty string sends an explicit empty `Authorization` header, required by some keyless free tiers that 401 on any recognized bearer token format. |
+| `host` / `port` | Where the proxy's HTTP server listens. |
+| `timeout` | How long a single race is allowed to run before giving up and returning a `502`. |
+| `require_finish_reason` | Set to `null` or leave it out to accept any completion, truncated or not. Default `"stop"` rejects `finish_reason: "length"` results, which is the usual failure mode when a reasoning model gets too small a `max_tokens`. |
+| `backends[].api_key` | An empty string sends an explicit empty `Authorization` header. Some keyless free tiers 401 you the moment they see any recognized bearer token format, even a made-up one, so this matters. |
 
-## Known limitations / honest caveats
+## Things I haven't solved yet
 
-- **This doubles (or triples, etc.) your request volume** against whatever
-  rate limits your backends enforce. If you're racing two free-tier models
-  that share a provider-side rate limit pool, you may hit that limit faster
-  under sustained load, not slower. Benchmark your actual usage pattern
-  before assuming this is a pure win.
-- **No response caching.** Every request re-races from scratch.
-- **No streaming support yet.** Responses are buffered in full before being
-  returned. PRs welcome, see CONTRIBUTING.md.
-- **No built-in auth.** This is meant for local/trusted-network use. Add a
-  reverse proxy with auth in front of it if you need to expose it further.
-- Tested manually against a live keyless free-tier OpenAI-compatible
-  endpoint as of the initial release; not yet covered by an automated test
-  suite. Contributions adding pytest coverage are very welcome.
+- **You're now sending 2x, 3x, however many requests you're racing.**
+  If two of your backends share a rate limit, racing them can burn through
+  that limit faster, not slower. Worth watching before you assume this is
+  a clean win for your setup.
+- **No caching.** Every request races from a cold start.
+- **No streaming.** Responses get buffered fully before returning. This is
+  probably the biggest gap right now, and I'd genuinely welcome a PR for it.
+- **No auth on the proxy itself.** It's meant to live on localhost. Put a
+  real reverse proxy with real auth in front if you need to expose it.
+- I tested this by hand against a live free-tier endpoint. There's no
+  automated test suite yet, so treat it accordingly until one exists.
 
 ## Contributing
 
