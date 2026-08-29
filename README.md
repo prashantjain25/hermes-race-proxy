@@ -15,15 +15,15 @@ approval judging) that fire on every turn, a sequential retry means you pay
 the primary's full timeout before ever trying the fallback.
 
 This proxy instead fires **all configured backends in parallel** and returns
-the first one that comes back with real content — cutting worst-case latency
-down to whichever backend is fastest *right now*, instead of a fixed
+the first one that comes back with real content, cutting worst-case latency
+down to whichever backend is fastest right now, instead of a fixed
 sequential wait.
 
 It was built and tested against a keyless OpenAI-compatible free-tier
 endpoint racing two different models, but works with any OpenAI-compatible
-`/v1/chat/completions` endpoint — mix free and paid backends, local and
+`/v1/chat/completions` endpoint. Mix free and paid backends, local and
 hosted, whatever you want to race. Swap in whichever providers/models you use
-in `race_proxy.example.json` (or `.yaml`) — nothing in this repo is tied to a
+in `race_proxy.example.json` (or `.yaml`); nothing in this repo is tied to a
 specific vendor.
 
 ## Key design decisions
@@ -38,10 +38,10 @@ specific vendor.
   (`http.server`, `concurrent.futures`, `urllib`). YAML config is optional
   (`pip install pyyaml`); JSON config works with no extra installs at all.
 - **No new attack surface beyond your existing credentials.** The proxy does
-  not store or generate credentials — it forwards whatever `api_key`/headers
+  not store or generate credentials; it forwards whatever `api_key`/headers
   you put in its config, exactly as you would configure any HTTP client. It
-  binds to `127.0.0.1` by default and has no auth of its own — do not expose
-  it on a public interface without adding one.
+  binds to `127.0.0.1` by default and has no auth of its own, so do not
+  expose it on a public interface without adding one.
 
 ## Quickstart
 
@@ -81,7 +81,7 @@ auxiliary:
   skills_hub:
     provider: custom
     base_url: http://127.0.0.1:8977/v1
-    model: race-proxy   # ignored by the proxy — it substitutes each
+    model: race-proxy   # ignored by the proxy; it substitutes each
                           # backend's real model name per config
 ```
 
@@ -114,23 +114,27 @@ supervisor of choice (systemd, launchd, pm2, etc.).
 | `host` / `port` | Local bind address for the proxy's HTTP server. |
 | `timeout` | Per-race wall-clock budget in seconds. If no backend returns usable content within this window, the proxy returns a `502`. |
 | `require_finish_reason` | Set to `null`/omit to accept any completion, even truncated ones. Default `"stop"` rejects `finish_reason: "length"` results (common failure mode with reasoning models given too small a `max_tokens`). |
-| `backends[].api_key` | Empty string sends an explicit empty `Authorization` header — required by some keyless free tiers that 401 on *any* recognized bearer token format. |
+| `backends[].api_key` | Empty string sends an explicit empty `Authorization` header, required by some keyless free tiers that 401 on any recognized bearer token format. |
 
 ## Known limitations / honest caveats
 
 - **This doubles (or triples, etc.) your request volume** against whatever
   rate limits your backends enforce. If you're racing two free-tier models
-  that share a provider-side rate limit pool, you may hit that limit *faster*
+  that share a provider-side rate limit pool, you may hit that limit faster
   under sustained load, not slower. Benchmark your actual usage pattern
   before assuming this is a pure win.
 - **No response caching.** Every request re-races from scratch.
 - **No streaming support yet.** Responses are buffered in full before being
-  returned. PRs welcome.
+  returned. PRs welcome, see CONTRIBUTING.md.
 - **No built-in auth.** This is meant for local/trusted-network use. Add a
   reverse proxy with auth in front of it if you need to expose it further.
 - Tested manually against a live keyless free-tier OpenAI-compatible
   endpoint as of the initial release; not yet covered by an automated test
   suite. Contributions adding pytest coverage are very welcome.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
