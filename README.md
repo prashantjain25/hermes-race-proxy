@@ -17,8 +17,10 @@ extensible without touching the others:
 | `repairs.py` | *Why* a response might be broken and how to fix it, behind a `RepairStrategy` interface. Bring your own vendor-specific fix without editing anything else — see "Bring your own repair" below. |
 | `discovery.py` | Optional backend-SELECTION extension point: probe/rank candidate models at proxy startup instead of hardcoding a static list. Off by default. |
 | `connection_pool.py` | HTTP connection pooling (persistent per-backend connections, reused across requests) and the shared worker thread pool — the same "pay setup cost once, not per request" pattern a database client uses for connection pooling. |
+| `providers/` | Optional convenience layer for `discovery.py`: one file per LLM vendor's connection contract (base_url, auth style, model listing), plus `providers/pool.py` to build an N providers × M models-per-provider flat backend list. See "Bring your own backend-discovery policy" below. |
 | `examples/custom_repairs_example.py` | Runnable template for plugging in your own repair strategy. |
-| `examples/custom_discovery_example.py` | Runnable template for plugging in your own backend-discovery policy (a real one: 2 fixed backends + top-2 from an exhaustive catalog probe). |
+| `examples/custom_discovery_example.py` | Runnable template for plugging in your own backend-discovery policy, hand-rolled without `providers/`. |
+| `examples/provider_pool_example.py` | The same policy as above, rewritten on top of `providers/` — the recommended starting point once you want more than one provider. |
 
 Default behavior with none of the extension points configured is
 unchanged from a plain static `backends:` list in config — everything
@@ -212,6 +214,59 @@ policy: 2 fixed backends always included, plus the top 2 fastest models
 from an exhaustive startup probe of another provider's full catalog
 (candidates run in parallel, ranked by measured response latency, only
 successful responders kept).
+
+## Provider layer (`providers/`): N providers × M models
+
+`discovery.py`'s custom policy above still leaves you re-deriving each
+vendor's connection contract (base_url, auth style, model-listing
+shape) inline. `providers/` factors that out into one small object per
+vendor, and `providers/pool.py` turns a list of "N enabled providers,
+each contributing M models" into one flat backend list —
+
+    total backends = sum(top_n for each enabled ProviderSlot)
+
+```python
+from providers.opencode_zen import OpenCodeZenProvider
+from providers.nvidia_build import NvidiaBuildProvider
+from providers.pool import ProviderSlot, build_pool
+
+def discover_backends(cfg: dict):
+    return build_pool([
+        # Fixed: exact models, no probing.
+        ProviderSlot(
+            provider=OpenCodeZenProvider(),
+            model_ids=["nemotron-3.5-lightning-free", "laguna-s-2.1-free"],
+        ),
+        # Discovered: exhaustively probe, keep the top 2 fastest.
+        ProviderSlot(
+            provider=NvidiaBuildProvider(),
+            api_key=cfg.get("nvidia_api_key", ""),
+            top_n=2,
+            candidate_prefixes=("deepseek-ai/", "nvidia/", "meta/", "qwen/"),
+        ),
+    ])
+```
+
+See `examples/provider_pool_example.py` for this exact policy as a
+complete, runnable `custom_discovery_module` — verified end-to-end
+against live opencode.ai/zen and build.nvidia.com endpoints.
+
+Four providers ship with real, verified connection contracts (base_url
++ auth requirement, checked live against each vendor as of Aug 2026):
+
+| Provider | `providers/*.py` | base_url | Needs a key for chat completions? |
+|---|---|---|---|
+| opencode.ai/zen | `opencode_zen.py` | `https://opencode.ai/zen/v1` | No — `-free` models are fully keyless |
+| OpenRouter | `openrouter.py` | `https://openrouter.ai/api/v1` | Yes — confirmed 401 keyless, even on `:free`-suffixed models |
+| DeepInfra | `deepinfra.py` | `https://api.deepinfra.com/v1/openai` | Yes — confirmed 401 keyless, no free-tier model naming convention |
+| NVIDIA build.nvidia.com | `nvidia_build.py` | `https://integrate.api.nvidia.com/v1` | Yes — credit-limited TRIAL service, not a stable free tier (see caveat below) |
+
+Adding a fifth provider (self-hosted vLLM, Together, Groq, whatever) is
+one new file subclassing `Provider` from `providers/base.py` — override
+`base_url`, `requires_api_key`, and `default_headers()` if the vendor
+needs anything beyond a bearer token. `list_models()` works unmodified
+for any vendor whose `/v1/models` listing matches the standard
+`{"data": [{"id": "..."}]}` shape; override it if not.
 
 ## Connection pooling
 
