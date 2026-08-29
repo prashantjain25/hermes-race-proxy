@@ -9,7 +9,9 @@
       "base_url": "https://your-provider-a.example.com/v1",
       "model": "your-model-a",
       "api_key": "",
-      "headers": {}
+      "headers": {},
+      "repair_structured_output": true,
+      "repair_token_starvation": true
     },
     {
       "name": "backend-b",

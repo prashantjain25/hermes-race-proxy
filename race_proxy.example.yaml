@@ -9,6 +9,8 @@ backends:
     model: your-model-a
     api_key: ""
     headers: {}
+    repair_structured_output: true
+    repair_token_starvation: true
 
   - name: backend-b
     base_url: https://your-provider-b.example.com/v1

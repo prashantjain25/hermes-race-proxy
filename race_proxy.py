@@ -36,6 +36,8 @@ ready-to-copy template:
         model: your-model-a
         api_key: ""          # empty string = no Authorization header sent
         headers: {}           # any extra headers your provider requires
+        repair_structured_output: true   # auto-relax response_format on 400/422
+        repair_token_starvation: true    # auto-boost max_tokens on empty+length
       - name: backend-b
         base_url: https://your-provider-b.example.com/v1
         model: your-model-b
@@ -72,24 +74,87 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8977
 
 
-class Backend:
-    __slots__ = ("name", "base_url", "model", "api_key", "headers")
+def _relax_response_format(body: dict, rung: int) -> Optional[dict]:
+    """Return *body* with its ``response_format`` progressively loosened.
 
-    def __init__(self, name: str, base_url: str, model: str, api_key: str = "", headers: Optional[dict] = None):
+    Many OpenAI-compatible gateways (free-tier aggregators especially)
+    advertise Chat Completions compatibility but reject strict JSON-Schema
+    structured output with an opaque 400 that never mentions
+    ``response_format`` by name (e.g. a generic
+    ``"Upstream request failed: [400] Provider returned error"``). A caller
+    can't reliably string-match its way to "this was a structured-output
+    rejection" across every vendor's error envelope shape — so instead of
+    trying to *detect* the cause, we just try looser contracts in order
+    whenever the response was a 400/422 AND the request carried a
+    ``response_format``. This is model-agnostic and vendor-agnostic: it
+    doesn't matter which backend or model produced the 400, the ladder is
+    the same.
+
+    Rung 0: original body, untouched (the caller's first attempt).
+    Rung 1: ``response_format.json_schema.strict`` forced to False, schema
+             kept. Some vendors support json_schema mode but reject strict
+             enforcement specifically (uneven ``strict: true`` support is a
+             documented gap across Together/Groq/Fireworks-style compat
+             layers).
+    Rung 2: ``response_format`` stripped entirely. Schema enforcement
+             degrades to whatever the system/user prompt asked for in
+             plain text — the caller's own response parser needs a
+             loose-JSON-scan fallback for this to still work (Hermes's
+             ``title_generator._extract_title_text`` already has one).
+
+    Returns None once there is nothing left to relax (all rungs exhausted).
+    """
+    rf = body.get("response_format")
+    if not isinstance(rf, dict):
+        return None  # no response_format in this request; nothing to relax
+    if rung == 1:
+        if rf.get("type") != "json_schema":
+            return None
+        json_schema = rf.get("json_schema")
+        if not isinstance(json_schema, dict) or json_schema.get("strict") is not True:
+            return None  # already non-strict or no strict flag to drop
+        new_body = dict(body)
+        new_rf = dict(rf)
+        new_json_schema = dict(json_schema)
+        new_json_schema["strict"] = False
+        new_rf["json_schema"] = new_json_schema
+        new_body["response_format"] = new_rf
+        return new_body
+    if rung == 2:
+        new_body = dict(body)
+        new_body.pop("response_format", None)
+        return new_body
+    return None
+
+
+class Backend:
+    __slots__ = (
+        "name", "base_url", "model", "api_key", "headers",
+        "repair_structured_output", "repair_token_starvation",
+    )
+
+    def __init__(
+        self, name: str, base_url: str, model: str, api_key: str = "",
+        headers: Optional[dict] = None, repair_structured_output: bool = True,
+        repair_token_starvation: bool = True,
+    ):
         self.name = name
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key or ""
         self.headers = headers or {}
+        # See _relax_response_format(). On by default: it's a no-op unless
+        # the request actually carries a response_format, so it's safe to
+        # leave on for backends that never use structured output.
+        self.repair_structured_output = repair_structured_output
+        # See _looks_token_starved(). On by default: it's a no-op unless
+        # the response actually comes back empty with finish_reason
+        # "length", so it's safe to leave on for non-reasoning backends
+        # too (they simply never trigger it).
+        self.repair_token_starvation = repair_token_starvation
 
-    def call(self, payload: dict, timeout: float) -> dict:
-        """Issue the chat-completions request against this backend.
-
-        Returns a dict: {"ok": bool, "backend": name, "latency": float,
-        "data": <parsed json or None>, "error": <str or None>}.
-        """
-        body = dict(payload)
-        body["model"] = self.model
+    def _do_request(self, body: dict, timeout: float) -> dict:
+        """One raw HTTP attempt. Returns the same shape as call()."""
         url = f"{self.base_url}/chat/completions"
         headers = {"Content-Type": "application/json"}
         headers.update(self.headers)
@@ -110,17 +175,126 @@ class Backend:
                 raw = resp.read()
             data = json.loads(raw)
             latency = time.time() - t0
-            return {"ok": True, "backend": self.name, "latency": latency, "data": data, "error": None}
+            return {"ok": True, "backend": self.name, "latency": latency, "data": data,
+                     "error": None, "status_code": 200}
         except urllib.error.HTTPError as e:
             latency = time.time() - t0
             try:
                 err_body = e.read().decode()[:500]
             except Exception:
                 err_body = str(e)
-            return {"ok": False, "backend": self.name, "latency": latency, "data": None, "error": f"HTTP {e.code}: {err_body}"}
+            return {"ok": False, "backend": self.name, "latency": latency, "data": None,
+                     "error": f"HTTP {e.code}: {err_body}", "status_code": e.code}
         except Exception as e:
             latency = time.time() - t0
-            return {"ok": False, "backend": self.name, "latency": latency, "data": None, "error": str(e)}
+            return {"ok": False, "backend": self.name, "latency": latency, "data": None,
+                     "error": str(e), "status_code": None}
+
+    def call(self, payload: dict, timeout: float) -> dict:
+        """Issue the chat-completions request against this backend.
+
+        Retries through two independent repair ladders before giving up:
+
+        1. Structured-output relaxation (_relax_response_format) on a
+           400/422, when ``repair_structured_output`` is enabled and the
+           request carries a ``response_format``.
+        2. Token-budget boost (_looks_token_starved) on a 200 whose
+           content came back empty because max_tokens was too small for
+           the model's reasoning overhead, when ``repair_token_starvation``
+           is enabled.
+
+        Both are model-agnostic: neither depends on which backend or model
+        is behind this call, only on the shape of the request/response.
+        Time spent on retries counts against the caller's overall race
+        timeout (each attempt gets an even share).
+
+        Returns a dict: {"ok": bool, "backend": name, "latency": float,
+        "data": <parsed json or None>, "error": <str or None>,
+        "repaired_rung": <str|None>}. ``repaired_rung`` is one of
+        "format:1", "format:2", "tokens", or None (no repair needed).
+        """
+        body = dict(payload)
+        body["model"] = self.model
+
+        max_attempts = 1
+        if self.repair_structured_output:
+            max_attempts += 2
+        if self.repair_token_starvation:
+            max_attempts += 1
+        per_attempt_timeout = max(timeout / max_attempts, 5.0)
+
+        t_start = time.time()
+        result = self._do_request(body, per_attempt_timeout)
+        result["repaired_rung"] = None
+
+        # ── Ladder 1: structured-output relaxation (400/422 only) ──
+        if not result["ok"] and self.repair_structured_output and (
+            result.get("status_code") in (400, 422)
+        ):
+            for rung in (1, 2):
+                relaxed_body = _relax_response_format(body, rung)
+                if relaxed_body is None:
+                    continue
+                logger.info(
+                    "%s: 400/422 on original request, retrying with "
+                    "response_format relaxed (rung %d)", self.name, rung,
+                )
+                retry_result = self._do_request(relaxed_body, per_attempt_timeout)
+                if retry_result["ok"]:
+                    retry_result["repaired_rung"] = f"format:{rung}"
+                    result = retry_result
+                    body = relaxed_body  # the body that actually worked — ladder 2 must build on this, not the original
+                    break
+                result = retry_result
+                result["repaired_rung"] = None
+                if result.get("status_code") not in (400, 422):
+                    break
+                body = relaxed_body  # carry the relaxation forward for the next rung
+
+        # ── Ladder 2: token-budget boost (200-but-starved only) ──
+        if result["ok"] and self.repair_token_starvation and _looks_token_starved(result["data"]):
+            current_max_tokens = body.get("max_tokens")
+            if current_max_tokens is None or current_max_tokens < MIN_SAFE_MAX_TOKENS:
+                boosted_body = dict(body)
+                boosted_body["max_tokens"] = MIN_SAFE_MAX_TOKENS
+                logger.info(
+                    "%s: response starved (empty content, finish_reason=length) "
+                    "at max_tokens=%s, retrying with max_tokens=%d",
+                    self.name, current_max_tokens, MIN_SAFE_MAX_TOKENS,
+                )
+                retry_result = self._do_request(boosted_body, per_attempt_timeout)
+                if retry_result["ok"] and not _looks_token_starved(retry_result["data"]):
+                    prior_rung = result.get("repaired_rung")
+                    retry_result["repaired_rung"] = (
+                        f"{prior_rung}+tokens" if prior_rung else "tokens"
+                    )
+                    result = retry_result
+                else:
+                    logger.warning(
+                        "%s: max_tokens boost to %d did not resolve starvation "
+                        "(ok=%s, error=%s)", self.name, MIN_SAFE_MAX_TOKENS,
+                        retry_result["ok"], retry_result.get("error"),
+                    )
+
+        result["latency"] = time.time() - t_start
+        return result
+
+
+MIN_SAFE_MAX_TOKENS = 2000
+"""Floor for a boosted retry when a low max_tokens starves reasoning models.
+
+Reasoning models (ling, nemotron, and similar) spend part of their
+completion budget on hidden ``reasoning`` tokens before ever writing
+visible ``content``. A caller that sets a small max_tokens for a
+short-answer task (Hermes's title_generator uses 64, expecting "a title is
+a handful of tokens") can starve the model completely: all budget goes to
+reasoning, content is empty, finish_reason is "length". This is a
+model-behavior problem, not a per-caller bug — no amount of prompt tuning
+fixes it, because the model doesn't know its own budget is too small
+until it has already spent it. The fix is a bigger budget, tried
+automatically. See references/auxiliary-compression-benchmarks.md for the
+benchmark data behind this floor (reasoning consumed the whole budget
+below ~1500 tokens in production trials; 2000-4000 is the safe range)."""
 
 
 def _response_is_usable(data: dict, require_finish_reason: Optional[str]) -> bool:
@@ -137,6 +311,30 @@ def _response_is_usable(data: dict, require_finish_reason: Optional[str]) -> boo
         return True
     except (KeyError, IndexError, TypeError):
         return False
+
+
+def _looks_token_starved(data: Optional[dict]) -> bool:
+    """True when a 200 response is empty because reasoning ate the budget.
+
+    Distinguishes "the model produced nothing because max_tokens was too
+    small for reasoning + content" (fixable by raising max_tokens) from
+    other reasons a response might be unusable (e.g. the model just
+    refused, or `require_finish_reason` rejected a legitimately truncated
+    answer for other reasons). We only call this a starvation case when
+    BOTH signals line up: empty/whitespace content AND finish_reason ==
+    "length" — a model that stopped naturally (finish_reason "stop") with
+    empty content has a different problem that a bigger budget won't fix.
+    """
+    if not isinstance(data, dict):
+        return False
+    try:
+        choice = data["choices"][0]
+        msg = choice.get("message", {})
+        content = (msg.get("content") or "").strip()
+        finish_reason = choice.get("finish_reason")
+    except (KeyError, IndexError, TypeError):
+        return False
+    return not content and finish_reason == "length"
 
 
 def race(backends: list[Backend], payload: dict, timeout: float, require_finish_reason: Optional[str]) -> dict:
@@ -227,7 +425,11 @@ class RaceProxyHandler(BaseHTTPRequestHandler):
             data = result["data"]
             # Tag which backend actually served this, for observability
             # (non-standard field, harmless to OpenAI-compatible clients).
-            data["_race_proxy"] = {"winner": result["backend"], "latency": round(result["latency"], 3)}
+            data["_race_proxy"] = {
+                "winner": result["backend"],
+                "latency": round(result["latency"], 3),
+                "repaired_rung": result.get("repaired_rung"),
+            }
             self._send_json(200, data)
         else:
             self._send_json(502, {"error": {"message": result["error"], "type": "race_proxy_all_backends_failed"}})
@@ -255,6 +457,8 @@ def build_backends_from_config(cfg: dict) -> list[Backend]:
             model=entry["model"],
             api_key=entry.get("api_key", ""),
             headers=entry.get("headers", {}),
+            repair_structured_output=entry.get("repair_structured_output", True),
+            repair_token_starvation=entry.get("repair_token_starvation", True),
         ))
     return backends
 
