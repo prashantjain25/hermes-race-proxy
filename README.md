@@ -19,6 +19,34 @@ the first one that comes back with real content, cutting worst-case latency
 down to whichever backend is fastest right now, instead of a fixed
 sequential wait.
 
+## How the parallelism works
+
+The core idea is a request race, not a queue:
+
+1. A single incoming `/v1/chat/completions` request arrives at the proxy.
+2. The proxy copies that request and fires it at **every configured backend
+   at once**, each on its own thread (`concurrent.futures.ThreadPoolExecutor`).
+   Nothing is sent sequentially and nothing waits for another backend to
+   fail first.
+3. As responses stream back, the proxy inspects each one as it arrives. A
+   response only counts as a win if it has actual content and (by default)
+   `finish_reason: "stop"`. Fast-but-empty responses (see the
+   reasoning-model note below) are discarded, not accepted.
+4. The **first backend to produce a usable answer wins**. Its response is
+   returned to the client immediately, tagged with `_race_proxy.winner` and
+   `_race_proxy.latency` for observability.
+5. Every other in-flight request is left to finish on its own thread and its
+   result is simply discarded, no request is fired late, so the proxy never
+   trades throughput for latency; it always races everything from the same
+   starting line.
+
+This turns "N backends, sequential fallback, worst-case = sum of every
+backend's timeout" into "N backends, parallel race, worst-case = the
+slowest single backend's timeout, and the common case = whichever backend
+happens to be fastest for that specific request." It is a simple pattern
+(no queueing, no load balancing, no smart routing) precisely so it stays
+auditable in one file.
+
 It was built and tested against a keyless OpenAI-compatible free-tier
 endpoint racing two different models, but works with any OpenAI-compatible
 `/v1/chat/completions` endpoint. Mix free and paid backends, local and
