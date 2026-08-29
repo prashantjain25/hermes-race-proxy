@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+*.log
+race_proxy.local.json
+race_proxy.local.yaml

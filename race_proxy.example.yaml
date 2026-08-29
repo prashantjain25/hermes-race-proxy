@@ -1,0 +1,17 @@
+host: 127.0.0.1
+port: 8977
+timeout: 90
+require_finish_reason: stop
+
+backends:
+  - name: backend-a
+    base_url: https://your-provider-a.example.com/v1
+    model: your-model-a
+    api_key: ""
+    headers: {}
+
+  - name: backend-b
+    base_url: https://your-provider-b.example.com/v1
+    model: your-model-b
+    api_key: ""
+    headers: {}
