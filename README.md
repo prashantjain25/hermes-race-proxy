@@ -22,7 +22,7 @@ auxiliary-task routing, but works with any OpenAI-compatible client.
 ## Quickstart
 
 ```bash
-git clone https://github.com/<you>/hermes-race-proxy
+git clone https://github.com/prashantjain25/hermes-race-proxy
 cd hermes-race-proxy
 python3 race_proxy.py --config race_proxy.example.json --verbose
 ```
