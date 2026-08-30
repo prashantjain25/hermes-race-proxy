@@ -5,3 +5,8 @@ __pycache__/
 race_proxy.local.json
 race_proxy.local.yaml
 reddit_post_draft.txt
+reddit_intro.txt
+reddit_comment_reply.txt
+reddit_localllama_crosspost.txt
+.DS_Store
+

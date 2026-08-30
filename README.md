@@ -6,7 +6,7 @@ with something usable. Built for [Hermes Agent](https://github.com/NousResearch/
 auxiliary-task routing, but works with any OpenAI-compatible client.
 
 **Contents**
-- [Quickstart](#quickstart)
+- [Quickstart](#quickstart-60-seconds)
 - [How the race works](#how-the-race-works)
 - [Why this exists](#why-this-exists)
 - [Project layout](#project-layout)
@@ -19,19 +19,18 @@ auxiliary-task routing, but works with any OpenAI-compatible client.
 - [Known limitations](#known-limitations)
 - [Contributing / License](#contributing--license)
 
-## Quickstart
+## Quickstart (60 seconds)
 
 ```bash
+# 1 - clone and run the proxy (starts with the example config, 3 backends)
 git clone https://github.com/prashantjain25/hermes-race-proxy
 cd hermes-race-proxy
 python3 race_proxy.py --config race_proxy.example.json --verbose
-```
 
-In another terminal:
-
-```bash
+# 2 - in another terminal, confirm it's alive
 curl -s http://127.0.0.1:8977/health
 
+# 3 - send a real chat request, watch who wins the race
 curl -s -X POST http://127.0.0.1:8977/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Say hi in 3 words"}],"max_tokens":1500}'
