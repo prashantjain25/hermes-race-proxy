@@ -35,21 +35,20 @@ Google-side capacity, not an integration issue; retry logic already
 lives in this proxy's core racing engine (race_proxy_core.py's
 Backend.call) for exactly that case.
 
-gemini-2.5-flash-lite (a plausible older sibling of the 3.5 model
-above) was checked separately, live, against this exact base_url and
-the same production key: real HTTP 404, "This model
-models/gemini-2.5-flash-lite is no longer available to new users.
-Please update your code to use models/gemini-3.5-flash-lite." Not an
-auth or wiring problem, a hard model-retirement on Google's side,
-confirmed by the fact the identical key/endpoint succeeds immediately
-on gemini-3.5-flash-lite in production (see above). Kept as its own
-named helper below (build_gemini_25_flash_lite_backend) specifically
-so this dead-end is documented and callable-to-reconfirm rather than
-silently absent, not because it currently works.
+gemini-2.5-flash-lite was checked earlier and found retired (real
+HTTP 404, "no longer available to new users"). Re-checked this
+session with gemini-3.1-flash-lite instead (2.5 has since been fully
+phased out, superseded by later checks), against the same production
+base_url/key as gemini-3.5-flash-lite: real HTTP 200 with real
+content ("PING_OK") back, confirmed via this repo's own
+Backend._do_request path. Kept as its own named helper below
+(build_gemini_31_flash_lite_backend) as a second, independently
+working model on this same provider, useful if 3.5-flash-lite ever
+gets rate-limited or retired the way 2.5 was.
 
 list_models() (this provider's `/models` catalog listing) was not
 exercised live in this check, only chat/completions has direct
-evidence, both from the ad-hoc check and from production log history.
+evidence, both from the ad-hoc checks and from production log history.
 """
 from __future__ import annotations
 
@@ -69,12 +68,12 @@ class GcpGeminiProvider(Provider):
 #: (many status=200 race-done ok=True entries), not a one-off check.
 GEMINI_FLASH_MODEL_ID = "gemini-3.5-flash-lite"
 
-#: Confirmed DEAD via a live, separate check against the same
-#: base_url/key as GEMINI_FLASH_MODEL_ID above: real HTTP 404 "no
-#: longer available to new users," Google's own error message points
-#: callers at gemini-3.5-flash-lite instead. Kept as a named constant
-#: so this retirement is documented, not because it's usable.
-GEMINI_25_FLASH_LITE_MODEL_ID = "gemini-2.5-flash-lite"
+#: Confirmed LIVE via a separate, isolated check against the same
+#: base_url/key as GEMINI_FLASH_MODEL_ID above: real HTTP 200 with
+#: real content back. A second working model on this provider, not
+#: the production default, useful as a fallback if 3.5-flash-lite
+#: ever gets rate-limited or retired.
+GEMINI_31_FLASH_LITE_MODEL_ID = "gemini-3.1-flash-lite"
 
 
 def build_gemini_backend(api_key: str, name: str = "gemini", model_id: str = GEMINI_FLASH_MODEL_ID):
@@ -84,12 +83,11 @@ def build_gemini_backend(api_key: str, name: str = "gemini", model_id: str = GEM
     return GcpGeminiProvider().build_backend(model_id, api_key=api_key, name=name)
 
 
-def build_gemini_25_flash_lite_backend(api_key: str, name: str = "gemini-2.5-flash-lite"):
-    """Separate, deliberately isolated method for gemini-2.5-flash-lite,
-    tested live and confirmed DEAD (real HTTP 404, model retired by
-    Google, see this module's docstring). Builds a Backend the same as
-    build_gemini_backend() would, callable to re-confirm if Google ever
-    reinstates the model, but do not wire this into a production pool
-    expecting it to work today.
+def build_gemini_31_flash_lite_backend(api_key: str, name: str = "gemini-3.1-flash-lite"):
+    """Separate, deliberately isolated method for gemini-3.1-flash-lite,
+    tested live and confirmed WORKING (real HTTP 200, real content
+    back, see this module's docstring). Builds a Backend the same as
+    build_gemini_backend() would, a second live option on this
+    provider alongside the production default (gemini-3.5-flash-lite).
     """
-    return GcpGeminiProvider().build_backend(GEMINI_25_FLASH_LITE_MODEL_ID, api_key=api_key, name=name)
+    return GcpGeminiProvider().build_backend(GEMINI_31_FLASH_LITE_MODEL_ID, api_key=api_key, name=name)
