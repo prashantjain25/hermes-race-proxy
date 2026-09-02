@@ -42,7 +42,8 @@ class ProviderSlot:
     many of its models should end up racing.
 
     ``api_key=""`` is valid and meaningful for keyless providers (e.g.
-    ``OpenCodeZenProvider``, whose free models need no key at all),
+    ``OpenCodeZenProvider``'s nemotron/laguna free models, which need
+    no key at all, see providers/http/opencode.py),
     the pool builder does not require every slot to have a key, only
     that ``provider.requires_api_key`` slots that lack one are skipped
     with a clear log line rather than silently producing zero backends.

@@ -46,7 +46,7 @@ from pathlib import Path
 # examples/. Not needed once these are on your PYTHONPATH.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from providers.http.opencode_zen import OpenCodeZenProvider
+from providers.http.opencode import OpenCodeZenProvider
 from providers.http.nvidia_build import NvidiaBuildProvider
 from providers.pool import ProviderSlot, build_pool
 

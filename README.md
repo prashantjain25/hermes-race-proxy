@@ -131,7 +131,7 @@ auxiliary:
 | `connection_pool.py` | HTTP connection pooling (persistent per-backend connections) and the shared worker thread pool. |
 | `providers/base.py`, `providers/pool.py` | Convenience layer for `discovery.py`, shared across every provider: the `Provider` base contract and the N-providers x M-models pool builder. |
 | `providers/http/` | One file per HTTP-reachable vendor's connection contract (opencode.ai/zen, OpenRouter, DeepInfra, NVIDIA build.nvidia.com, Ollama). |
-| `providers/cli/` | Empty by design. Holds a vendor's connection contract only once a real CLI-only integration (no HTTP API at all) is actually being added, see that directory's own docstring for why it stays empty otherwise. |
+| `providers/cli/` | CLI-only vendors (no HTTP API at all): `claude.py` (Claude Code CLI) and `opencode.py` (OpenCode coding-agent CLI, a different product from the HTTP `opencode.py` above despite the name overlap). |
 | `examples/custom_repairs_example.py` | Runnable template for a custom repair strategy. |
 | `examples/custom_discovery_example.py` | Runnable template for a custom discovery policy, hand-rolled without `providers/`. |
 | `examples/provider_pool_example.py` | The same policy rewritten on `providers/`, the recommended starting point once you want more than one provider. |
@@ -174,7 +174,7 @@ Nothing here is speculative. No CLI-only vendor ships in this repo yet, `provide
     total backends = sum(top_n for each enabled ProviderSlot)
 
 ```python
-from providers.http.opencode_zen import OpenCodeZenProvider
+from providers.http.opencode import OpenCodeZenProvider
 from providers.http.nvidia_build import NvidiaBuildProvider
 from providers.pool import ProviderSlot, build_pool
 
@@ -197,17 +197,22 @@ def discover_backends(cfg: dict):
 
 See `examples/provider_pool_example.py` for this exact policy as a complete `custom_discovery_module`, verified end-to-end against live opencode.ai/zen and build.nvidia.com endpoints.
 
-Five providers ship today, all under `providers/http/`:
+Six providers ship today, all under `providers/http/`:
 
 | Provider | `providers/http/*.py` | base_url | Needs a key for chat completions? |
 |---|---|---|---|
-| opencode.ai/zen | `opencode_zen.py` | `https://opencode.ai/zen/v1` | No, `-free` models are fully keyless |
+| opencode.ai/zen | `opencode.py` | `https://opencode.ai/zen/v1` | Nemotron/Laguna free, `-free` suffixed, fully keyless. GLM/Kimi paid, need a key |
+| Google Gemini (AI Studio / GCP) | `gcp.py` | `https://generativelanguage.googleapis.com/v1beta/openai` | Yes, always, no keyless tier |
 | OpenRouter | `openrouter.py` | `https://openrouter.ai/api/v1` | Yes, confirmed 401 keyless, even on `:free`-suffixed models |
 | DeepInfra | `deepinfra.py` | `https://api.deepinfra.com/v1/openai` | Yes, confirmed 401 keyless, no free-tier naming convention |
 | NVIDIA build.nvidia.com | `nvidia_build.py` | `https://integrate.api.nvidia.com/v1` | Yes, credit-limited TRIAL service, not a stable free tier |
 | Ollama (local) | `ollama.py` | `http://localhost:11434/v1` | No real auth, dummy key sent per Ollama's own client examples |
 
-opencode.ai/zen, OpenRouter, DeepInfra, and NVIDIA build.nvidia.com are live-tested against the real vendor (curl, real key, real response, documented in each file). **Ollama is built from official docs only.** No local instance was available to test against; treat it as a starting point to verify.
+opencode.ai/zen, OpenRouter, DeepInfra, NVIDIA build.nvidia.com, and GCP Gemini are live-tested against the real vendor (curl or actual production race-proxy log evidence, documented in each file). GCP's evidence is this repo's own compaction proxy's production log (`race-proxy.log`), not an ad-hoc check, see `providers/http/gcp.py`'s docstring. **Ollama is built from docs/config only, not live-verified against a real key**, treat it as a starting point to verify.
+
+`providers/http/opencode.py` is named after the backing platform (opencode.ai/zen), not any one model, since nemotron, laguna, glm, and kimi all share the same base_url/auth contract. It ships named helpers, `build_nemotron_backend()`, `build_laguna_backend()`, `build_glm_backend(api_key)`, `build_kimi_backend(api_key)`, so a caller doesn't need to remember exact model-id strings; nemotron/laguna are free, glm/kimi are paid and need a real key.
+
+CLI-backed backends (no HTTP API at all) live under `providers/cli/`: `claude.py` for Claude Code's CLI and `opencode.py` for OpenCode's coding-agent CLI (a different product from the opencode.ai/zen HTTP provider above, despite the name overlap, see that file's own docstring). Both were checked live on this machine: the CLI launches, accepts the documented flags, and produces the documented output shape, but neither has a successful, content-verified run captured end to end here (one hit an expired OAuth session, the other an account credit limit), re-verify against a working account before relying on either in production.
 
 <details>
 <summary>Add your own provider (vLLM, LM Studio, Groq, Together, Fireworks, ...)</summary>

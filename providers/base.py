@@ -20,9 +20,10 @@ NVIDIA-ranking logic, means every new provider you want to add
 requires re-deriving its connection contract from scratch instead of
 writing it once and reusing it everywhere.
 
-Each concrete provider in this package (``providers/opencode_zen.py``,
-``providers/openrouter.py``, ``providers/deepinfra.py``,
-``providers/nvidia_build.py``) is a small, independently-useful object:
+Each concrete provider in this package (``providers/http/opencode.py``,
+``providers/http/openrouter.py``, ``providers/http/deepinfra.py``,
+``providers/http/nvidia_build.py``, ``providers/http/gcp.py``) is a small,
+independently-useful object:
 it can list its own catalog (where the vendor exposes one) and build a
 :class:`~race_proxy_core.Backend` for any model ID, with the right
 auth/headers already wired. ``providers/pool.py`` is the layer above

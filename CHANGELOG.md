@@ -23,6 +23,15 @@ change landed, not when it was designed.
   `chat.completion.chunk`.
 
 ### Added
+- `providers/http/gcp.py`: Google Gemini via its OpenAI-compatible
+  endpoint. Verified against this repo's own production compaction
+  proxy log (race-proxy.log), which has been racing gemini-3.5-flash-lite
+  on this exact base_url and winning repeatedly with real 200s.
+- `providers/cli/claude.py` and `providers/cli/opencode.py`: CLI-only
+  backends for Claude Code's CLI and OpenCode's coding-agent CLI. Argv
+  construction and error-shape handling verified live; full
+  content-verified success not captured (blocked by account-level auth
+  on this machine, not a wiring issue).
 - `wire_format.py`: a small module that owns response wire-shaping only
   (JSON vs SSE framing for whoever is calling this proxy). Kept separate
   from `race_proxy_core.py` on purpose, same reasoning as the

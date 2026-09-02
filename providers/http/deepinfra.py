@@ -14,7 +14,7 @@ Verified live (Aug 2026):
   credit-free path confirmed for this vendor. Included for
   completeness (users with their own DeepInfra key can still use it
   as a pool member), but list_models() has no "free subset" helper
-  the way opencode_zen/openrouter do, because there isn't one.
+  the way opencode/openrouter do, because there isn't one.
 """
 from __future__ import annotations
 
