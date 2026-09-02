@@ -29,6 +29,12 @@ change landed, not when it was designed.
   `providers/` and `callers/` split: the racing engine shouldn't carry
   knowledge of any particular caller's request/response conventions.
   Depends on nothing but the standard library.
+- `examples/cli_caller_example.py`: runnable, key-free demo of the
+  `Caller` interface (`callers/`), using `echo` as a stand-in CLI so it
+  runs with zero setup.
+- `examples/streaming_response_example.py`: runnable, no-network demo
+  of `wire_format.py` showing the exact bytes sent for a `stream: true`
+  vs `stream: false` request.
 
 ## 2026-09-02
 

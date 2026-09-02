@@ -135,6 +135,8 @@ auxiliary:
 | `examples/custom_repairs_example.py` | Runnable template for a custom repair strategy. |
 | `examples/custom_discovery_example.py` | Runnable template for a custom discovery policy, hand-rolled without `providers/`. |
 | `examples/provider_pool_example.py` | The same policy rewritten on `providers/`, the recommended starting point once you want more than one provider. |
+| `examples/cli_caller_example.py` | Runnable demo of the `Caller` interface (`callers/`) using `echo` as a stand-in CLI, no real vendor or key needed. |
+| `examples/streaming_response_example.py` | Runnable, no-network demo of `wire_format.py`: exactly what bytes go out for a `stream: true` vs `stream: false` request. |
 
 Default behavior with none of the extension points configured is an unchanged plain static `backends:` list in config; everything above is opt-in.
 
@@ -163,7 +165,7 @@ Config-driven, per backend:
 }
 ```
 
-Nothing here is speculative. No CLI-only vendor ships in this repo yet, `providers/cli/` stays empty until one is actually wired up and verified against the real CLI's real behavior.
+Nothing here is speculative. No CLI-only vendor ships in this repo yet, `providers/cli/` stays empty until one is actually wired up and verified against the real CLI's real behavior. See `examples/cli_caller_example.py` for a complete, runnable demo of the `Caller` interface itself (using `echo` as a stand-in CLI, no real vendor or key needed to see how it wires together).
 
 ## Providers and pooling (N providers x M models)
 
@@ -300,7 +302,7 @@ auxiliary:
 
 Start the proxy before starting Hermes, and let your process supervisor of choice (systemd, launchd, pm2, whatever) keep it running.
 
-Compaction calls in particular send `stream: true` when Hermes has a progress hook active on that call. The proxy answers with a single SSE `delta` chunk carrying the complete response, not a real token-by-token stream, but enough for Hermes's own stream decoder to read real content back instead of aggregating an empty string from a response it couldn't parse as a stream. Verified end to end against the real `openai` Python SDK against a live compaction-shaped request; see [CHANGELOG.md](CHANGELOG.md) for the specific failure this replaced.
+Compaction calls in particular send `stream: true` when Hermes has a progress hook active on that call. The proxy answers with a single SSE `delta` chunk carrying the complete response, not a real token-by-token stream, but enough for Hermes's own stream decoder to read real content back instead of aggregating an empty string from a response it couldn't parse as a stream. Verified end to end against the real `openai` Python SDK against a live compaction-shaped request; see [CHANGELOG.md](CHANGELOG.md) for the specific failure this replaced. See `examples/streaming_response_example.py` for a standalone, no-network demo of exactly what bytes go out on the wire either way.
 
 ## Config reference
 
