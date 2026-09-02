@@ -535,6 +535,7 @@ def build_backends_from_config(cfg: dict, registry: Optional[RepairRegistry] = N
             headers=entry.get("headers", {}),
             repairs=backend_registry,
             caller=caller,
+            extra_body=entry.get("extra_body"),
         ))
     return backends
 
