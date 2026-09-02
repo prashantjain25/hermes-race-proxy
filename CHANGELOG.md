@@ -37,6 +37,12 @@ change landed, not when it was designed.
   endpoint. Verified against this repo's own production compaction
   proxy log (race-proxy.log), which has been racing gemini-3.5-flash-lite
   on this exact base_url and winning repeatedly with real 200s.
+- `providers/cli/hermes.py`: CLI-only backend for Hermes Agent's own
+  CLI (`hermes -z "..."`), the CLI this repo is actually tested
+  against. Fully content-verified end to end through Backend.call()
+  (real "PING_OK" echoed back, including with --reasoning minimal),
+  unlike claude.py/opencode.py's CLI backends which hit account-level
+  auth blocks during their own live checks.
 - `providers/cli/claude.py` and `providers/cli/opencode.py`: CLI-only
   backends for Claude Code's CLI and OpenCode's coding-agent CLI. Argv
   construction and error-shape handling verified live; full
