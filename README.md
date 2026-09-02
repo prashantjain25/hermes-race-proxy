@@ -214,6 +214,23 @@ opencode.ai/zen, OpenRouter, DeepInfra, NVIDIA build.nvidia.com, and GCP Gemini 
 
 CLI-backed backends (no HTTP API at all) live under `providers/cli/`: `claude.py` for Claude Code's CLI, `opencode.py` for OpenCode's coding-agent CLI (a different product from the opencode.ai/zen HTTP provider above, despite the name overlap, see that file's own docstring), and `hermes.py` for Hermes Agent's own CLI. `claude.py` and `opencode.py` were checked live on this machine: the CLI launches, accepts the documented flags, and produces the documented output shape, but neither has a successful, content-verified run captured end to end here (one hit an expired OAuth session, the other an account credit limit), re-verify against a working account before relying on either in production. `hermes.py` is the one exception: fully content-verified end to end (`hermes -z "reply with exactly: PING_OK"` really returns `PING_OK`, confirmed through this repo's own `Backend.call()` path, including with `--reasoning minimal`), since it's the CLI this repo is actually being tested against.
 
+### Tested models, with real numbers
+
+Every row below is a model this repo has actually called, live, against the real vendor, not a claim from a spec sheet. Latency and tok/s are wall-clock, measured either via raw HTTP against the vendor or through this repo's own `Backend.call()` path (noted per row); single numbers are one run, "avg" numbers are the mean of 3 runs. Treat single-run numbers as a data point, not a guarantee, vendor APIs vary run to run.
+
+| Model | Backend/helper | Path tested | Result | Latency / throughput |
+|---|---|---|---|---|
+| `gemini-3.5-flash-lite` | `providers/http/gcp.py`, `build_gemini_backend()` | Production `race_proxy` log (`race-proxy.log`), repeated real traffic | 200 OK, repeatedly, wins races against nemotron/laguna | 2.89s-10.40s per observed race win (varies with prompt size) |
+| `gemini-3.1-flash-lite` (default) | `providers/http/gcp.py`, `build_gemini_31_flash_lite_backend(extra_body={})` | Raw HTTP, this session | 200 OK, real content | avg 87.90 tok/s (3 runs) |
+| `gemini-3.1-flash-lite` + `reasoning_effort: minimal` | `providers/http/gcp.py`, `build_gemini_31_flash_lite_backend()` (default) | Raw HTTP, this session | 200 OK, real content | avg 143.94 tok/s (3 runs) |
+| `gemini-3.1-flash-lite` + `reasoning_effort: minimal` | same, via `Backend.call()` | Full proxy stack: config-loaded `extra_body`, isolated on a temp port, real POST through `race_proxy.py` | 200 OK, `race-done ok=True` in the live log | avg 157.61 tok/s (3 runs) |
+| `gemini-2.5-flash-lite` | `providers/http/gcp.py` (checked, then removed as dead) | Raw HTTP and via `Backend.call()`, this session | **Retired.** Real HTTP 404, "no longer available to new users" | n/a |
+| `hermes-cli` (Hermes Agent's own CLI) | `providers/cli/hermes.py`, `build_hermes_backend()` | `hermes -z "..."`, subprocess, via `Backend.call()` | 200 OK (synthetic), real `PING_OK` echoed back verbatim, with and without `--reasoning minimal` | not benchmarked for tok/s (CLI startup overhead dominates, not representative of model speed) |
+| `nemotron-3.5-lightning-free` | `providers/http/opencode.py`, `build_nemotron_backend()` | Production `race_proxy` log | Timed out at 300s once observed (`attempt-failed`, `error=The read operation timed out`) | n/a, treat as unreliable/slow under this session's load |
+| `laguna-s-2.1-free` | `providers/http/opencode.py`, `build_laguna_backend()` | Production `race_proxy` log | 200 OK, but slow: 91.74s-134.24s observed | ~91-134s per completion, not fast |
+| `claude` (Claude Code CLI) | `providers/cli/claude.py` | subprocess, this session | Blocked: expired OAuth session | n/a, argv construction verified, content not |
+| OpenCode CLI (coding-agent) | `providers/cli/opencode.py` | subprocess, this session | Blocked: account credit limit | n/a, argv construction verified, content not |
+
 <details>
 <summary>Add your own provider (vLLM, LM Studio, Groq, Together, Fireworks, ...)</summary>
 
