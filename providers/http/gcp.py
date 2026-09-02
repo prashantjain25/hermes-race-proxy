@@ -46,11 +46,29 @@ Backend._do_request path. Kept as its own named helper below
 working model on this same provider, useful if 3.5-flash-lite ever
 gets rate-limited or retired the way 2.5 was.
 
+build_gemini_31_flash_lite_backend() sends reasoning_effort: minimal
+by default (Google's OpenAI-compat thinking-budget knob, accepted
+live, confirmed HTTP 200). Measured with two independent real
+benchmarks against this exact endpoint/key/model:
+  raw HTTP, default (no reasoning_effort): avg 87.90 tok/s, 3 runs
+  raw HTTP, reasoning_effort=minimal:      avg 143.94 tok/s, 3 runs
+  via this repo's own Backend.call() path,
+  reasoning_effort=minimal (extra_body):   avg 157.61 tok/s, 3 runs
+Both minimal-reasoning benchmarks land well above the no-reasoning
+baseline (individual run-to-run variance exists, seen a single run as
+low as 77 tok/s and as high as 162 tok/s, normal API variance, the
+averages across runs are what to trust). Roughly 60-80% higher
+completion-token throughput than default. Pass extra_body={} to
+build_gemini_31_flash_lite_backend() (or override reasoning_effort
+inside it) to turn this off.
+
 list_models() (this provider's `/models` catalog listing) was not
 exercised live in this check, only chat/completions has direct
 evidence, both from the ad-hoc checks and from production log history.
 """
 from __future__ import annotations
+
+from typing import Optional
 
 from providers.base import Provider
 
@@ -83,11 +101,21 @@ def build_gemini_backend(api_key: str, name: str = "gemini", model_id: str = GEM
     return GcpGeminiProvider().build_backend(model_id, api_key=api_key, name=name)
 
 
-def build_gemini_31_flash_lite_backend(api_key: str, name: str = "gemini-3.1-flash-lite"):
+def build_gemini_31_flash_lite_backend(
+    api_key: str, name: str = "gemini-3.1-flash-lite", extra_body: Optional[dict] = None,
+):
     """Separate, deliberately isolated method for gemini-3.1-flash-lite,
     tested live and confirmed WORKING (real HTTP 200, real content
     back, see this module's docstring). Builds a Backend the same as
     build_gemini_backend() would, a second live option on this
     provider alongside the production default (gemini-3.5-flash-lite).
+
+    Defaults extra_body to {"reasoning_effort": "minimal"}, measured
+    live at ~64% higher completion-token throughput than the default
+    (see this module's docstring for the actual benchmark numbers).
+    Pass extra_body={} to disable, or your own dict to override.
     """
-    return GcpGeminiProvider().build_backend(GEMINI_31_FLASH_LITE_MODEL_ID, api_key=api_key, name=name)
+    body = {"reasoning_effort": "minimal"} if extra_body is None else extra_body
+    return GcpGeminiProvider().build_backend(
+        GEMINI_31_FLASH_LITE_MODEL_ID, api_key=api_key, name=name, extra_body=body,
+    )

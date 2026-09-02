@@ -23,6 +23,16 @@ change landed, not when it was designed.
   `chat.completion.chunk`.
 
 ### Added
+- `Backend.extra_body` (`race_proxy_core.py`): generic, provider-agnostic
+  mechanism to merge fixed fields into every outbound request for a
+  backend (e.g. a vendor's reasoning/thinking-budget knob). Core has no
+  idea what any given key means, that's each provider's concern.
+- `providers/http/gcp.py`: `build_gemini_31_flash_lite_backend()` now
+  defaults to `reasoning_effort: minimal` on gemini-3.1-flash-lite,
+  measured live at roughly 60-80% higher completion-token throughput
+  than the default (multiple independent benchmark runs, both raw HTTP
+  and through this repo's own Backend.call() path, see the file's
+  docstring for exact numbers). Pass `extra_body={}` to disable.
 - `providers/http/gcp.py`: Google Gemini via its OpenAI-compatible
   endpoint. Verified against this repo's own production compaction
   proxy log (race-proxy.log), which has been racing gemini-3.5-flash-lite

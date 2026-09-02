@@ -110,7 +110,7 @@ class Provider:
         headers.update(self.default_headers())
         return headers
 
-    def build_backend(self, model_id: str, api_key: str = "", name: Optional[str] = None):
+    def build_backend(self, model_id: str, api_key: str = "", name: Optional[str] = None, extra_body: Optional[dict] = None):
         """Construct a :class:`~race_proxy_core.Backend` for *model_id*
         on this provider, with this provider's auth/headers contract
         already applied.
@@ -132,6 +132,7 @@ class Provider:
             model=model_id,
             api_key=api_key,
             headers=self.default_headers(),
+            extra_body=extra_body,
         )
 
 

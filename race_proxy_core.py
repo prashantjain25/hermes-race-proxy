@@ -124,18 +124,26 @@ class Backend:
     are independent axes, see callers/base.py's docstring.
     """
 
-    __slots__ = ("name", "base_url", "model", "api_key", "headers", "repairs", "caller")
+    __slots__ = ("name", "base_url", "model", "api_key", "headers", "repairs", "caller", "extra_body")
 
     def __init__(
         self, name: str, base_url: str, model: str, api_key: str = "",
         headers: Optional[dict] = None, repairs: Optional[RepairRegistry] = None,
-        caller: Optional[Caller] = None,
+        caller: Optional[Caller] = None, extra_body: Optional[dict] = None,
     ):
         self.name = name
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key or ""
         self.headers = headers or {}
+        # Fixed fields merged into every outbound request body for this
+        # backend specifically (e.g. a vendor-specific reasoning/thinking
+        # knob like {"reasoning_effort": "minimal"}), applied BEFORE
+        # "model"/"stream" are force-set in call() below so a caller
+        # can't accidentally override those two via extra_body. Generic
+        # mechanism, this class has no idea what any given key means,
+        # that's each provider's concern (see providers/http/*.py).
+        self.extra_body = extra_body or {}
         # Defaults to every registered strategy (DEFAULT_REGISTRY plus
         # anything a custom_repairs_module added to it at startup). Pass
         # an empty RepairRegistry() to disable all repairs for this
@@ -231,6 +239,7 @@ class Backend:
         actually fixed it. See ``repairs.RepairRegistry.attempt``.
         """
         body = dict(payload)
+        body.update(self.extra_body)
         body["model"] = self.model
         # Upstream input concern: normalize the outbound request shape
         # before it reaches a vendor backend. A streamed upstream
