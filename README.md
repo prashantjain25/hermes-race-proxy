@@ -197,39 +197,47 @@ def discover_backends(cfg: dict):
 
 See `examples/provider_pool_example.py` for this exact policy as a complete `custom_discovery_module`, verified end-to-end against live opencode.ai/zen and build.nvidia.com endpoints.
 
-Six providers ship today, all under `providers/http/`:
+### HTTP providers
 
-| Provider | `providers/http/*.py` | base_url | Needs a key for chat completions? |
+| Provider | File | base_url | Needs API key? |
 |---|---|---|---|
-| opencode.ai/zen | `opencode.py` | `https://opencode.ai/zen/v1` | Nemotron/Laguna free, `-free` suffixed, fully keyless. GLM/Kimi paid, need a key |
-| Google Gemini (AI Studio / GCP) | `gcp.py` | `https://generativelanguage.googleapis.com/v1beta/openai` | Yes, always, no keyless tier |
-| OpenRouter | `openrouter.py` | `https://openrouter.ai/api/v1` | Yes, confirmed 401 keyless, even on `:free`-suffixed models |
-| DeepInfra | `deepinfra.py` | `https://api.deepinfra.com/v1/openai` | Yes, confirmed 401 keyless, no free-tier naming convention |
-| NVIDIA build.nvidia.com | `nvidia_build.py` | `https://integrate.api.nvidia.com/v1` | Yes, credit-limited TRIAL service, not a stable free tier |
-| Ollama (local) | `ollama.py` | `http://localhost:11434/v1` | No real auth, dummy key sent per Ollama's own client examples |
+| opencode.ai/zen | `opencode.py` | `https://opencode.ai/zen/v1` | Nemotron/Laguna: no. GLM/Kimi: yes |
+| Google Gemini | `gcp.py` | `https://generativelanguage.googleapis.com/v1beta/openai` | Yes, always |
+| OpenRouter | `openrouter.py` | `https://openrouter.ai/api/v1` | Yes (401 keyless, even `:free` models) |
+| DeepInfra | `deepinfra.py` | `https://api.deepinfra.com/v1/openai` | Yes (401 keyless) |
+| NVIDIA build.nvidia.com | `nvidia_build.py` | `https://integrate.api.nvidia.com/v1` | Yes (trial credits, not a stable free tier) |
+| Ollama (local) | `ollama.py` | `http://localhost:11434/v1` | No (dummy key, per Ollama's own convention) |
 
-opencode.ai/zen, OpenRouter, DeepInfra, NVIDIA build.nvidia.com, and GCP Gemini are live-tested against the real vendor (curl or actual production race-proxy log evidence, documented in each file). GCP's evidence is this repo's own compaction proxy's production log (`race-proxy.log`), not an ad-hoc check, see `providers/http/gcp.py`'s docstring. **Ollama is built from docs/config only, not live-verified against a real key**, treat it as a starting point to verify.
+`opencode.py` covers the whole opencode.ai/zen platform, not one model: `build_nemotron_backend()`, `build_laguna_backend()`, `build_glm_backend(api_key)`, `build_kimi_backend(api_key)`.
 
-`providers/http/opencode.py` is named after the backing platform (opencode.ai/zen), not any one model, since nemotron, laguna, glm, and kimi all share the same base_url/auth contract. It ships named helpers, `build_nemotron_backend()`, `build_laguna_backend()`, `build_glm_backend(api_key)`, `build_kimi_backend(api_key)`, so a caller doesn't need to remember exact model-id strings; nemotron/laguna are free, glm/kimi are paid and need a real key.
+Live-tested against the real vendor: opencode.ai/zen, OpenRouter, DeepInfra, NVIDIA, GCP Gemini. **Ollama is config-only, not live-verified.**
 
-CLI-backed backends (no HTTP API at all) live under `providers/cli/`: `claude.py` for Claude Code's CLI, `opencode.py` for OpenCode's coding-agent CLI (a different product from the opencode.ai/zen HTTP provider above, despite the name overlap, see that file's own docstring), and `hermes.py` for Hermes Agent's own CLI. `claude.py` and `opencode.py` were checked live on this machine: the CLI launches, accepts the documented flags, and produces the documented output shape, but neither has a successful, content-verified run captured end to end here (one hit an expired OAuth session, the other an account credit limit), re-verify against a working account before relying on either in production. `hermes.py` is the one exception: fully content-verified end to end (`hermes -z "reply with exactly: PING_OK"` really returns `PING_OK`, confirmed through this repo's own `Backend.call()` path, including with `--reasoning minimal`), since it's the CLI this repo is actually being tested against.
+### CLI providers
 
-### Tested models, with real numbers
+| CLI | File | Content-verified? |
+|---|---|---|
+| Hermes Agent (`hermes -z`) | `hermes.py` | Yes, real `PING_OK` echoed back through `Backend.call()`, plain and with `--reasoning minimal` |
+| Claude Code (`claude -p`) | `claude.py` | No, argv verified only, blocked by an expired OAuth session |
+| OpenCode CLI (`opencode run`) | `opencode.py` | No, argv verified only, blocked by an account credit limit |
 
-Every row below is a model this repo has actually called, live, against the real vendor, not a claim from a spec sheet. Latency and tok/s are wall-clock, measured either via raw HTTP against the vendor or through this repo's own `Backend.call()` path (noted per row); single numbers are one run, "avg" numbers are the mean of 3 runs. Treat single-run numbers as a data point, not a guarantee, vendor APIs vary run to run.
+`providers/cli/opencode.py` is OpenCode's coding-agent CLI, a different product from `providers/http/opencode.py` (the opencode.ai/zen HTTP platform) despite the shared name.
 
-| Model | Backend/helper | Path tested | Result | Latency / throughput |
-|---|---|---|---|---|
-| `gemini-3.5-flash-lite` | `providers/http/gcp.py`, `build_gemini_backend()` | Production `race_proxy` log (`race-proxy.log`), repeated real traffic | 200 OK, repeatedly, wins races against nemotron/laguna | 2.89s-10.40s per observed race win (varies with prompt size) |
-| `gemini-3.1-flash-lite` (default) | `providers/http/gcp.py`, `build_gemini_31_flash_lite_backend(extra_body={})` | Raw HTTP, this session | 200 OK, real content | avg 87.90 tok/s (3 runs) |
-| `gemini-3.1-flash-lite` + `reasoning_effort: minimal` | `providers/http/gcp.py`, `build_gemini_31_flash_lite_backend()` (default) | Raw HTTP, this session | 200 OK, real content | avg 143.94 tok/s (3 runs) |
-| `gemini-3.1-flash-lite` + `reasoning_effort: minimal` | same, via `Backend.call()` | Full proxy stack: config-loaded `extra_body`, isolated on a temp port, real POST through `race_proxy.py` | 200 OK, `race-done ok=True` in the live log | avg 157.61 tok/s (3 runs) |
-| `gemini-2.5-flash-lite` | `providers/http/gcp.py` (checked, then removed as dead) | Raw HTTP and via `Backend.call()`, this session | **Retired.** Real HTTP 404, "no longer available to new users" | n/a |
-| `hermes-cli` (Hermes Agent's own CLI) | `providers/cli/hermes.py`, `build_hermes_backend()` | `hermes -z "..."`, subprocess, via `Backend.call()` | 200 OK (synthetic), real `PING_OK` echoed back verbatim, with and without `--reasoning minimal` | not benchmarked for tok/s (CLI startup overhead dominates, not representative of model speed) |
-| `nemotron-3.5-lightning-free` | `providers/http/opencode.py`, `build_nemotron_backend()` | Production `race_proxy` log | Timed out at 300s once observed (`attempt-failed`, `error=The read operation timed out`) | n/a, treat as unreliable/slow under this session's load |
-| `laguna-s-2.1-free` | `providers/http/opencode.py`, `build_laguna_backend()` | Production `race_proxy` log | 200 OK, but slow: 91.74s-134.24s observed | ~91-134s per completion, not fast |
-| `claude` (Claude Code CLI) | `providers/cli/claude.py` | subprocess, this session | Blocked: expired OAuth session | n/a, argv construction verified, content not |
-| OpenCode CLI (coding-agent) | `providers/cli/opencode.py` | subprocess, this session | Blocked: account credit limit | n/a, argv construction verified, content not |
+### Tested models
+
+Real runs against the real vendor, not spec-sheet claims. "avg" = mean of 3 runs.
+
+| Model | Where tested | Result |
+|---|---|---|
+| `gemini-3.5-flash-lite` | Production `race-proxy.log` | 200 OK repeatedly, wins races; 2.89s-10.40s per win |
+| `gemini-3.1-flash-lite`, default | Raw HTTP | 200 OK; avg 87.90 tok/s |
+| `gemini-3.1-flash-lite`, `reasoning_effort: minimal` | Raw HTTP | 200 OK; avg 143.94 tok/s |
+| `gemini-3.1-flash-lite`, `reasoning_effort: minimal` | Full proxy stack (`Backend.call()`, real config, real port) | 200 OK, `race-done ok=True`; avg 157.61 tok/s |
+| `gemini-2.5-flash-lite` | Raw HTTP + `Backend.call()` | **Retired.** Real HTTP 404 |
+| `nemotron-3.5-lightning-free` | Production `race-proxy.log` | Timed out at 300s once observed |
+| `laguna-s-2.1-free` | Production `race-proxy.log` | 200 OK but slow: 91.74s-134.24s |
+| `hermes-cli` | `hermes -z`, via `Backend.call()` | 200 OK, real `PING_OK`; not tok/s-benchmarked (CLI startup dominates) |
+| `claude` CLI | subprocess | Blocked: expired OAuth session |
+| OpenCode CLI | subprocess | Blocked: account credit limit |
 
 <details>
 <summary>Add your own provider (vLLM, LM Studio, Groq, Together, Fireworks, ...)</summary>
