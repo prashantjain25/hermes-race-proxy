@@ -300,6 +300,8 @@ auxiliary:
 
 Start the proxy before starting Hermes, and let your process supervisor of choice (systemd, launchd, pm2, whatever) keep it running.
 
+Compaction calls in particular send `stream: true` when Hermes has a progress hook active on that call. The proxy answers with a single SSE `delta` chunk carrying the complete response, not a real token-by-token stream, but enough for Hermes's own stream decoder to read real content back instead of aggregating an empty string from a response it couldn't parse as a stream. Verified end to end against the real `openai` Python SDK against a live compaction-shaped request; see [CHANGELOG.md](CHANGELOG.md) for the specific failure this replaced.
+
 ## Config reference
 
 ```json
@@ -356,7 +358,7 @@ See `examples/custom_discovery_example.py` (2 fixed backends plus the top 2 fast
 
 - **You're now sending 2x, 3x, however many requests you're racing.** If backends share a rate limit, racing burns through it faster. The structured-output/token-starvation repairs multiply this further (up to 4 attempts per request on a backend needing both), free on keyless tiers but worth knowing if paying per token.
 - **No caching.** Every request races from a cold start.
-- **No streaming.** Responses are buffered fully before returning. This is the biggest gap right now; a PR here is welcome.
+- **No true token-by-token streaming.** The race always waits for a full response before it has an answer at all, there's no way around that when the whole point is comparing N complete responses against each other. What changed: a client that requests `stream: true` now gets that complete answer back over proper SSE framing (one `delta` chunk, then `[DONE]`) instead of a flat JSON body, so streaming-aware clients decode it correctly instead of silently seeing empty content. The wire-shaping for this lives in `wire_format.py`, kept separate from the racing logic on purpose.
 - **No auth on the proxy itself.** Meant to live on localhost. Put a real reverse proxy with real auth in front if exposing it.
 - **The token-starvation floor is a single global constant, not per-model.** `MIN_SAFE_MAX_TOKENS` (2000) applies across all backends; raise it if a heavy-reasoning-overhead model still starves.
 - **Trial/credit-limited discovery APIs need your own production judgment.** The example discovery script probes NVIDIA's build.nvidia.com catalog, an explicit TRIAL service under NVIDIA's API Trial Terms (credit-limited, ~40 RPM account-wide, undocumented, not licensed for production traffic). Treat any trial/free-tier discovered backend as best-effort supplementary, racing alongside more predictable fixed backends, not alone.
@@ -364,4 +366,4 @@ See `examples/custom_discovery_example.py` (2 fixed backends plus the top 2 fast
 
 ## Contributing / License
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
+See [CONTRIBUTING.md](CONTRIBUTING.md). See [CHANGELOG.md](CHANGELOG.md) for release history and [CONTRIBUTORS.md](CONTRIBUTORS.md) for who's built this. MIT licensed.

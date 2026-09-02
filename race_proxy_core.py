@@ -50,6 +50,7 @@ from discovery import load_and_run_discovery
 from connection_pool import GLOBAL_POOL_MANAGER, pooled_request
 from callers.base import Caller
 from callers.http_caller import HttpCaller
+import wire_format
 
 try:
     import yaml  # type: ignore
@@ -231,13 +232,15 @@ class Backend:
         """
         body = dict(payload)
         body["model"] = self.model
-        # This proxy never streams back to the client (do_POST always
-        # returns one buffered _send_json call, never SSE), so a
-        # streamed upstream response is unusable no matter what: raw
-        # SSE text ("data: {...}\n\n...") fails json.loads() on every
-        # single attempt, guaranteeing a 502 after burning the full
-        # race timeout. Force non-streaming upstream unconditionally,
-        # regardless of what the client requested.
+        # Upstream input concern: normalize the outbound request shape
+        # before it reaches a vendor backend. A streamed upstream
+        # response is unusable here no matter what: raw SSE text
+        # ("data: {...}\n\n...") fails json.loads() on every single
+        # attempt, guaranteeing a failure after burning the full race
+        # timeout. Force non-streaming upstream unconditionally,
+        # regardless of what the inbound client requested. The inbound
+        # client's own stream preference is handled entirely
+        # separately, downstream, in wire_format.py.
         body["stream"] = False
 
         t_start = time.monotonic()
@@ -372,6 +375,22 @@ class RaceProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_sse_chunk_response(self, data: dict) -> None:
+        """Answer a ``stream: true`` request over SSE. Framing/shaping
+        logic lives in ``wire_format.py`` (output-concern module,
+        mirrors providers/ for input and callers/ for transport) —
+        core only knows it has a final answer and needs to hand it
+        back in whatever wire shape was requested, not how that shape
+        is built.
+        """
+        body = wire_format.build_sse_body(data)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         if self.path in ("/", "/health", "/v1/health"):
             self._send_json(200, {
@@ -430,7 +449,18 @@ class RaceProxyHandler(BaseHTTPRequestHandler):
                 "latency": round(result["latency"], 3),
                 "repaired_rung": result.get("repaired_rung"),
             }
-            self._send_json(200, data)
+            # Downstream output concern: honor the inbound client's own
+            # stream preference independently of the upstream leg
+            # (which always forces stream:false to the real backend,
+            # see Backend._do_request above). Any OpenAI-compatible
+            # client that requested stream:true expects SSE framing
+            # back and decodes accordingly; wire_format.py owns that
+            # shaping so this stays a plain dispatch, not a place
+            # where consumer-specific knowledge accumulates.
+            if wire_format.wants_streaming_response(payload):
+                self._send_sse_chunk_response(data)
+            else:
+                self._send_json(200, data)
         else:
             self._send_json(502, {"error": {"message": result["error"], "type": "race_proxy_all_backends_failed"}})
 
