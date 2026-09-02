@@ -45,8 +45,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 from repairs import DEFAULT_REGISTRY, RepairRegistry, load_custom_repairs
+from response_contracts import DEFAULT_CONTRACT_REGISTRY as CONTRACT_REGISTRY
 from discovery import load_and_run_discovery
 from connection_pool import GLOBAL_POOL_MANAGER, pooled_request
+from callers.base import Caller
+from callers.http_caller import HttpCaller
 
 try:
     import yaml  # type: ignore
@@ -106,18 +109,26 @@ def _get_shared_executor() -> "concurrent.futures.ThreadPoolExecutor":
 class Backend:
     """One upstream OpenAI-compatible chat-completions endpoint.
 
-    Owns the raw HTTP mechanics (:meth:`_do_request`) and delegates all
+    Owns request assembly (headers, auth) and delegates the actual
+    fetch to ``self.caller`` (see ``callers/base.py``) and all
     retry/repair decisions to its ``repairs`` registry (see
     ``repairs.py``). Swap in a different registry, via the ``repairs``
     constructor argument, or per-backend in config, to change which
-    repairs run for this backend without touching this class.
+    repairs run for this backend without touching this class. Swap in
+    a different ``caller`` (e.g. ``callers.cli_caller.CliCaller``
+    instead of the default ``callers.http_caller.HttpCaller``) to
+    reach a backend that has no HTTP API at all, without touching this
+    class either, that split is the whole point: HOW to fetch bytes
+    (caller) and WAS the fetch usable (repairs / response_contracts)
+    are independent axes, see callers/base.py's docstring.
     """
 
-    __slots__ = ("name", "base_url", "model", "api_key", "headers", "repairs")
+    __slots__ = ("name", "base_url", "model", "api_key", "headers", "repairs", "caller")
 
     def __init__(
         self, name: str, base_url: str, model: str, api_key: str = "",
         headers: Optional[dict] = None, repairs: Optional[RepairRegistry] = None,
+        caller: Optional[Caller] = None,
     ):
         self.name = name
         self.base_url = base_url.rstrip("/")
@@ -129,19 +140,25 @@ class Backend:
         # an empty RepairRegistry() to disable all repairs for this
         # backend, or registry.select([...]) to opt into a subset.
         self.repairs = repairs if repairs is not None else DEFAULT_REGISTRY
+        # Defaults to pooled HTTP (today's behavior, unchanged) — pass
+        # a callers.cli_caller.CliCaller (or your own Caller subclass)
+        # to reach a backend that isn't an HTTP endpoint at all.
+        self.caller = caller if caller is not None else HttpCaller(self.base_url)
 
     def _do_request(self, body: dict, timeout: float) -> dict:
-        """One HTTP attempt against this backend, over a pooled
-        connection (see connection_pool.py, same acquire/use/release
-        shape as checking a connection out of a DB pool).
+        """One fetch attempt against this backend, via ``self.caller``
+        (pooled HTTP by default, see connection_pool.py; a CLI
+        subprocess if a CliCaller was configured, see
+        callers/cli_caller.py — this method does not know or care
+        which).
 
         Returns a dict: {"ok": bool, "backend": name, "latency": float,
         "data": <parsed json or None>, "error": <str or None>,
         "status_code": <int or None>}. This is the ONLY method in this
-        file that knows how to talk HTTP to a backend, everything above
-        it (repair ladders, racing) operates on this dict shape only.
+        file that knows how to talk to a backend at all, everything
+        above it (repair ladders, racing) operates on this dict shape
+        only, regardless of transport.
         """
-        path = "/chat/completions"
         headers = {"Content-Type": "application/json"}
         headers.update(self.headers)
         if self.api_key:
@@ -155,20 +172,42 @@ class Backend:
         payload_bytes = json.dumps(body).encode()
         t0 = time.time()
         try:
-            status, raw = pooled_request(
-                base_url=self.base_url, path=path, method="POST",
-                body=payload_bytes, headers=headers, timeout=timeout,
-            )
+            status, raw = self.caller.call(payload_bytes, headers, timeout)
             latency = time.time() - t0
+            logger.debug(
+                "request backend=%s req_bytes=%d status=%d resp_bytes=%d latency=%.2fs timeout=%.1fs",
+                self.name, len(payload_bytes), status, len(raw), latency, timeout,
+            )
             if status == 200:
-                data = json.loads(raw)
-                return {"ok": True, "backend": self.name, "latency": latency, "data": data,
+                # HTTP 200 is necessary but NOT sufficient for "this
+                # backend actually answered" — a 200 can wrap SSE bytes
+                # that leaked through, a reasoning model that burned its
+                # whole budget and returned blank content, or a
+                # safety-filtered candidate. Delegate that judgment to
+                # this backend's vendor-specific ProviderContract
+                # (response_contracts.py) instead of a bare json.loads +
+                # generic status check — see that module's docstring for
+                # why this is an Adapter (translate N vendor wire
+                # formats into one canonical shape), not a Visitor.
+                contract = CONTRACT_REGISTRY.get(self.name)
+                parsed = contract.parse(raw, status, requested_model=body.get("model"))
+                if not parsed.ok:
+                    logger.warning(
+                        "contract-reject backend=%s contract=%s bytes=%d %s",
+                        self.name, contract.version, len(raw), parsed.error,
+                    )
+                    return {"ok": False, "backend": self.name, "latency": latency, "data": parsed.data,
+                             "error": parsed.error, "status_code": 200}
+                return {"ok": True, "backend": self.name, "latency": latency, "data": parsed.data,
                          "error": None, "status_code": 200}
             err_body = raw.decode(errors="replace")[:500]
+            logger.warning("http-error backend=%s status=%d latency=%.2fs body=%s",
+                           self.name, status, latency, err_body)
             return {"ok": False, "backend": self.name, "latency": latency, "data": None,
                      "error": f"HTTP {status}: {err_body}", "status_code": status}
         except Exception as e:
             latency = time.time() - t0
+            logger.debug("attempt-failed backend=%s latency=%.2fs error=%s", self.name, latency, e)
             return {"ok": False, "backend": self.name, "latency": latency, "data": None,
                      "error": str(e), "status_code": None}
 
@@ -192,6 +231,14 @@ class Backend:
         """
         body = dict(payload)
         body["model"] = self.model
+        # This proxy never streams back to the client (do_POST always
+        # returns one buffered _send_json call, never SSE), so a
+        # streamed upstream response is unusable no matter what: raw
+        # SSE text ("data: {...}\n\n...") fails json.loads() on every
+        # single attempt, guaranteeing a 502 after burning the full
+        # race timeout. Force non-streaming upstream unconditionally,
+        # regardless of what the client requested.
+        body["stream"] = False
 
         t_start = time.monotonic()
         deadline = t_start + timeout
@@ -268,6 +315,24 @@ def race(backends: list[Backend], payload: dict, timeout: float, require_finish_
             b = futures[fut]
             r = fut.result()
             results_seen.append(r)
+            if r["ok"] and not _response_is_usable(r["data"], require_finish_reason):
+                # Parsed fine but failed the usability gate (blank content /
+                # wrong finish_reason). Log WHY, with a content preview, so
+                # extraction-shape failures are visible instead of silent.
+                try:
+                    _ch = r["data"]["choices"][0]
+                    _content = (_ch.get("message") or {}).get("content") or ""
+                    _fr = _ch.get("finish_reason")
+                    _reasoning = (_ch.get("message") or {}).get("reasoning_content")
+                    logger.warning(
+                        "race-reject backend=%s finish_reason=%r content_chars=%d "
+                        "has_reasoning=%s preview=%r",
+                        b.name, _fr, len(_content), bool(_reasoning),
+                        _content[:200],
+                    )
+                except Exception:
+                    logger.warning("race-reject backend=%s data-shape-unexpected keys=%s",
+                                   b.name, list(r["data"].keys()) if isinstance(r.get("data"), dict) else type(r.get("data")))
             if r["ok"] and _response_is_usable(r["data"], require_finish_reason):
                 r["race_wall_clock"] = time.time() - t_start
                 logger.info(
@@ -332,15 +397,30 @@ class RaceProxyHandler(BaseHTTPRequestHandler):
         if self.path not in ("/v1/chat/completions", "/chat/completions"):
             self._send_json(404, {"error": "not found"})
             return
+        raw = b""
         try:
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b"{}"
             payload = json.loads(raw)
         except Exception as e:
+            logger.warning("client-bad-request bytes=%d error=%s", len(raw) if raw else 0, e)
             self._send_json(400, {"error": f"invalid JSON body: {e}"})
             return
 
+        # Client-side request context, so a slow/failing race can be tied
+        # back to what was asked of the proxy (compaction calls are huge;
+        # a small chat ping is not).
+        try:
+            _nmsgs = len(payload.get("messages", []))
+            _last = (payload.get("messages") or [{}])[-1]
+            _ctx = f"in_bytes={length} messages={_nmsgs} stream={payload.get('stream')} max_tokens={payload.get('max_tokens')} last_role={_last.get('role')!r}"
+        except Exception:
+            _ctx = f"in_bytes={length} (message summary failed)"
+        logger.info("race-start %s", _ctx)
+
+        _t = time.time()
         result = race(self.backends, payload, self.timeout, self.require_finish_reason)
+        logger.info("race-done ok=%s backend=%s wall=%.2fs", result["ok"], result.get("backend"), time.time() - _t)
         if result["ok"]:
             data = result["data"]
             # Tag which backend actually served this, for observability
@@ -384,6 +464,15 @@ def build_registry(cfg: dict) -> RepairRegistry:
 
 
 def build_backends_from_config(cfg: dict, registry: Optional[RepairRegistry] = None) -> list[Backend]:
+    """Builds every configured backend, including CLI-only ones.
+
+    Each ``backends[]`` entry defaults to HTTP (today's only behavior,
+    unchanged): ``base_url`` + ``model`` + optional ``api_key``/
+    ``headers``. An entry can instead set ``"caller": "cli"`` with a
+    ``"command": [...]`` list to reach a backend through its own CLI
+    (see callers/cli_caller.py) instead of HTTP — that entry needs no
+    ``base_url`` at all, since there is no HTTP endpoint to point at.
+    """
     registry = registry if registry is not None else build_registry(cfg)
     backends = []
     for entry in cfg.get("backends", []):
@@ -391,13 +480,22 @@ def build_backends_from_config(cfg: dict, registry: Optional[RepairRegistry] = N
         backend_registry = (
             registry.select(repair_names) if repair_names is not None else registry
         )
+        caller_kind = (entry.get("caller") or "http").lower()
+        if caller_kind == "cli":
+            from callers.cli_caller import CliCaller
+            caller = CliCaller(command_template=entry["command"], cwd=entry.get("cwd"))
+            base_url = entry.get("base_url", f"cli://{entry['name']}")
+        else:
+            caller = None  # Backend.__init__ defaults to HttpCaller(base_url)
+            base_url = entry["base_url"]
         backends.append(Backend(
             name=entry["name"],
-            base_url=entry["base_url"],
+            base_url=base_url,
             model=entry["model"],
             api_key=entry.get("api_key", ""),
             headers=entry.get("headers", {}),
             repairs=backend_registry,
+            caller=caller,
         ))
     return backends
 

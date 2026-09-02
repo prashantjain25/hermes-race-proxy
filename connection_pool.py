@@ -244,7 +244,19 @@ def pooled_request(
     for attempt in range(2):  # original + one stale-connection retry
         conn = pool.acquire(timeout=timeout)
         try:
-            conn.sock and conn.sock.settimeout(timeout)  # type: ignore[union-attr]
+            # conn.sock is None on a brand-new pooled connection (the
+            # socket isn't opened until .connect(), which request()
+            # calls lazily) — the `and` short-circuits and this silently
+            # NO-OPS, leaving the socket on its constructor-time
+            # connect_timeout (15s) as its permanent read timeout too,
+            # regardless of the real per-call `timeout` passed in here.
+            # A slow-but-healthy backend (reasoning models with a long
+            # silent generation gap) then gets killed at ~15s no matter
+            # what timeout the caller configured. Ensure the socket
+            # exists first, then set the real timeout on it every time.
+            if conn.sock is None:
+                conn.connect()
+            conn.sock.settimeout(timeout)
             conn.request(method, full_path, body=body, headers=headers)
             resp = conn.getresponse()
             status = resp.status
