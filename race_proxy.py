@@ -77,7 +77,7 @@ Usage:
     # or environment-var driven, see README
 
 
-Config format (YAML or JSON), see race_proxy.example.json/.yaml for a
+Config format (YAML or JSON), see examples/race_proxy.example.yaml for a
 ready-to-copy template:
     host: 127.0.0.1
     port: 8977

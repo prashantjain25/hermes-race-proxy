@@ -6,7 +6,7 @@ Verified live (Aug 2026):
 - base_url https://opencode.ai/zen/v1, OpenAI-compatible
   /chat/completions and /models endpoints, both confirmed working
   keyless.
-- `-free` suffixed models (ling-3.0-flash-fin-free,
+- `-free` suffixed models (nemotron-3.5-lightning-free,
   nemotron-3.5-lightning-free, laguna-s-2.1-free, etc.) require NO
   Authorization header at all, sending an empty Bearer token is safe,
   but some of this vendor's free models 401 on ANY recognized bearer
@@ -43,7 +43,7 @@ class OpenCodeZenProvider(Provider):
     def default_headers(self) -> dict:
         # Some opencode.ai/zen free-tier calls behave better with a
         # plausible User-Agent/Referer pair, carried over from the
-        # config this repo already ships in race_proxy.example.json.
+        # config this repo already ships in examples/race_proxy.example.yaml.
         return {
             "HTTP-Referer": "https://github.com/prashantjain25/hermes-race-proxy",
             "X-Title": "hermes-race-proxy",

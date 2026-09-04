@@ -4,6 +4,7 @@ __pycache__/
 *.log
 race_proxy.local.json
 race_proxy.local.yaml
+plan.md
 reddit_post_draft.txt
 reddit_intro.txt
 reddit_comment_reply.txt

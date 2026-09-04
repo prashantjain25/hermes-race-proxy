@@ -3,7 +3,57 @@
 All notable changes to this project are documented here. Dates are when the
 change landed, not when it was designed.
 
-## Unreleased
+## 1.1.0 — 2026-09-04
+
+Toolset trimming ships. The `hermes` launcher now trims the eager tool-schema
+payload off every main-model call, and the runtime config moves to YAML.
+
+### Added
+- `tool-trim.sh` launcher. Starts the race proxy (refcounted, torn down when the
+  last session exits), then runs the real CLI (`hermes-real`) with a single `-t`
+  union built from the live tool list plus `config/tools.yaml` overrides (`ON`
+  forces a toolset in, `OFF` forces it out). A user-supplied `-t`/`--toolsets`
+  bypasses the trimmer; every other flag passes through untouched. Wired as the
+  thin-shim and zshrc-alias target, so the trim is on by default for every
+  `hermes` invocation.
+- `config/tools.yaml`: the categorized override catalog. Every CLI toolset with
+  its `-t` flag, category, ON/OFF state, and the real tool names hermes registers
+  (built-ins verbatim; MCP tools as `mcp__<server>__<tool>`, keyed by server name
+  `exa`/`gemini-image`, since `-t "exa"` works on this install and
+  `-t "mcp-exa"` does not).
+
+### Changed
+- `config/race_proxy.local.json` -> `config/race_proxy.local.yaml`. The reader
+  (`load_config` in `race_proxy_core.py`) already spoke `.yaml`; the launcher now
+  points at the YAML file, and the JSON is retired. Config is gitignored either way.
+- Launcher renamed `race-proxy.sh` -> `tool-trim.sh` to match what it actually
+  does (proxy lifecycle + toolset trim + flag passthrough). Thin shim, zshrc
+  alias, and README updated; the superseded launcher and its backup were
+  removed during the repo cleanup.
+
+### Benchmark: input-token reduction on the main model (claude-sonnet-5)
+
+Eager tool schemas dominate a cold prompt's input budget, and `-t` is exclusive,
+so trimming toolsets is direct token savings on every main-model call. Measured
+on the main model (claude-sonnet-5) with a `-z` one-shot through the shipped
+wiring:
+
+| Toolset union (`-t`) | Toolsets | Input (total) tokens | vs the 13-set default |
+|---|---|---|---|
+| default (exa + default-enabled) | 13 | 22,511 - 24,163 | baseline |
+| trimmed: `delegation`/`cronjob`/`browser` OFF | 10 | 19,323 | -3,188 to -4,840 (14-20%) |
+| minimal: `terminal` only (user bypass) | 1 | 4,815 | -17,696 to -19,348 (~79%) |
+
+Read the numbers honestly:
+- The default union's count drifts 22.5-24.2K across runs (system-prompt/env
+  noise of a few hundred tokens); the trimmed value sat stable at 19,323 across
+  two separate sessions.
+- Single cold runs. The same `-t` union is provider-cached on repeat calls
+  (`cache_read` on later runs), so steady-state cost is the marginal delta, not
+  the full input.
+- `browser` alone showed no reduction (capability-gated tools don't materialize
+  schemas in a one-shot); the headline drop is `delegation` + `cronjob`.
+- `terminal`-only is an illustration of the mechanism, not a usable daily config.
 
 ### Fixed
 - Client-facing streaming responses. When a caller sends `stream: true`,
@@ -112,7 +162,7 @@ change landed, not when it was designed.
 - Restructured the README: table of contents, consolidated motivation and
   provider sections, collapsible deep-dives instead of one long scroll.
 
-## 2026-08-29
+## 1.0.0 — 2026-08-29
 
 ### Added
 - `CONTRIBUTING.md`.

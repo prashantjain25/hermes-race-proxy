@@ -12,7 +12,7 @@ Requires a real Google AI Studio / GCP API key, always, there is no
 keyless tier here (unlike opencode.ai/zen's `-free` models).
 
 Verified live in production, not a one-off check: this repo's own
-compaction proxy (race_proxy.local.json) has been racing a "gemini"
+compaction proxy (race_proxy.local.yaml) has been racing a "gemini"
 backend on exactly this base_url/model since before this file existed,
 and /Users/dolphin/.hermes/logs/race-proxy.log shows it winning races
 repeatedly with real 200s and real response bytes (status=200,
@@ -82,7 +82,7 @@ class GcpGeminiProvider(Provider):
 #: Model ID with a real, repeated production track record: this
 #: repo's own compaction proxy has been racing this exact model on
 #: this exact base_url and winning, confirmed via
-#: race_proxy.local.json and /Users/dolphin/.hermes/logs/race-proxy.log
+#: race_proxy.local.yaml and /Users/dolphin/.hermes/logs/race-proxy.log
 #: (many status=200 race-done ok=True entries), not a one-off check.
 GEMINI_FLASH_MODEL_ID = "gemini-3.5-flash-lite"
 

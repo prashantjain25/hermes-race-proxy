@@ -336,7 +336,7 @@ class StructuredOutputRelaxation(RepairStrategy):
 class TokenStarvationBoost(RepairStrategy):
     """Retry with a bigger ``max_tokens`` when reasoning ate the budget.
 
-    Reasoning models (ling, nemotron, and similar) spend part of their
+    Reasoning models (nemotron, laguna, and similar) spend part of their
     completion budget on hidden ``reasoning`` tokens before ever writing
     visible ``content``. A caller that sets a small ``max_tokens`` for a
     short-answer task (Hermes's title_generator uses 64, expecting "a

@@ -8,7 +8,7 @@ contributions that keep it that way are the easiest to merge.
 1. Fork the repo and clone your fork.
 2. No build step, nothing to install. Just run it:
    ```bash
-   python3 race_proxy.py --config race_proxy.example.json --verbose
+   python3 race_proxy.py --config examples/race_proxy.example.yaml --verbose
    ```
 3. Make your change.
 4. Test it against real backends (or mocked ones, see Testing below) before
@@ -61,7 +61,7 @@ few minutes, so a few things I'll push back on:
   this and new code should match.
 - No real API keys, model names, or provider URLs anywhere in the repo,
   including examples. Use the generic placeholders already in
-  `race_proxy.example.json`/`.yaml` (`backend-a`, `your-model-name`,
+  `examples/race_proxy.example.yaml` (`backend-a`, `your-model-name`,
   `your-provider.example.com`) in docs and examples too.
 
 ## Testing

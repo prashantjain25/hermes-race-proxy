@@ -1,0 +1,43 @@
+# race-models.yaml — single source of truth for which models the race proxy
+# fans out to, and which provider serves each under which anchor.
+#
+# Structure is anchors-first: the top-level `intents:` names WHAT the proxy
+# is for (compaction / toolchain_mcp), and providers are sub-keys under each.
+# A provider's endpoint lives exactly once in `providers:`; a model listed
+# under a provider in an intent binds to that provider's endpoint.
+#
+# API keys are NOT defined here. A provider references a key by name via
+# `api_key_ref:`, and the proxy resolves it first from Hermes's credential
+# pool (~/.hermes/auth.json -> credential_pool.<provider>, added with
+# `hermes auth add <provider> --type api-key --api-key <KEY>`), falling back
+# to a `secrets_file:` map or `api_key_env:` from an environment variable.
+# Add/rotate keys in the pool or env, never in this document.
+providers:
+  opencode:
+    base_url: https://opencode.ai/zen/v1
+    api_key: ""
+    headers:
+      HTTP-Referer: https://hermes-agent.nousresearch.com
+      X-Title: Hermes Agent
+      User-Agent: HermesAgent/0.20.6
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_ref: gemini
+    headers: {}
+
+intents:
+  # Context-compression traffic: gemini + nemotron.
+  compaction:
+    gemini:
+      - model: gemini-3.1-flash-lite
+        extra_body:
+          reasoning_effort: minimal
+      - gemini-3.5-flash-lite
+    opencode:
+      - nemotron-3.5-lightning-free
+
+  # mcp / skills_hub / title-generation traffic: laguna + nemotron.
+  toolchain_mcp:
+    opencode:
+      - laguna-s-2.1-free
+      - nemotron-3.5-lightning-free

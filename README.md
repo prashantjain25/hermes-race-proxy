@@ -1,26 +1,63 @@
 # hermes-race-proxy
 
-A tiny, zero-dependency local HTTP proxy that races a few OpenAI-compatible
-LLM backends against each other and hands back whichever one answers first
-with something usable. Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-auxiliary-task routing, but works with any OpenAI-compatible client.
+A tiny, zero-dependency local HTTP proxy that races several OpenAI-compatible
+LLM backends against each other and hands back whichever one answers first with
+something usable — plus a launcher that trims a Hermes session's tool catalog
+down to a single `-t` union, cutting the eager tool-schema payload off every
+main-model call. Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+auxiliary-task routing, but the proxy works with any OpenAI-compatible client
+and the trimmer with any `hermes` invocation.
 
 **Contents**
-- [Quickstart](#quickstart-60-seconds)
+- [Features](#features)
+- [Quickstart (60 seconds)](#quickstart-60-seconds)
 - [How the race works](#how-the-race-works)
 - [Why this exists](#why-this-exists)
 - [Two proxies, one core: toolchain vs compaction](#two-proxies-one-core-toolchain-vs-compaction)
 - [Project layout](#project-layout)
+- [Runtime config (race-models.yaml + race_proxy.local.yaml)](#runtime-config-race-modelsyaml--race_proxylocalyaml)
 - [Was the response actually usable? (response contracts)](#was-the-response-actually-usable-response-contracts)
 - [Reaching a backend: HTTP or CLI (callers)](#reaching-a-backend-http-or-cli-callers)
 - [Providers and pooling (N providers x M models)](#providers-and-pooling-n-providers-x-m-models)
 - [Built-in repairs (structured-output, token-starvation)](#built-in-repairs-structured-output-token-starvation)
 - [Connection pooling](#connection-pooling)
+- [Toolset trimming (tool-trim.sh)](#toolset-trimming-tool-trimsh)
 - [Wiring it into Hermes Agent](#wiring-it-into-hermes-agent)
 - [Config reference](#config-reference)
 - [Extending: custom repairs / discovery / providers](#extending-custom-repairs--discovery--providers)
 - [Known limitations](#known-limitations)
 - [Contributing / License](#contributing--license)
+
+## Features
+
+The two halves of the repo serve different problems, so the features split the
+same way.
+
+**Racing responses.** One `/v1/chat/completions` request fans out to N backends
+on N threads and the first *usable* answer wins, tagged with `_race_proxy.winner`
+and `_race_proxy.latency`. Free/local models stay honest by load-sharing against
+each other, one tier's bad day doesn't take the whole pipeline down, and a paid
+model's budget is held for calls that actually need it. Response **contracts**
+look inside a 200 and reject reasoning-budget starvation, safety-filter blocks,
+and streaming leakage before an empty answer can win. Two failure modes are
+**auto-repaired** without per-vendor error-string matching: structured-output
+rejection (retry by dropping `strict`, then `response_format`) and token
+starvation (retry with `max_tokens` raised to a safe floor). Providers, callers,
+and startup discovery are **pluggable** — one file per vendor transport (HTTP or
+CLI), a pool builder for N providers x M models, and a discovery policy you own.
+
+**Live toolset trimming.** `tool-trim.sh` wraps `hermes` (the real CLI), starts
+the race proxy (refcounted, torn down when the last session exits), and computes
+a single `-t` union from hermes's own live tool list overridden by
+`config/tools.yaml` (`state: ON` forces a toolset in, `OFF` forces it out).
+Because `-t` is exclusive and eager tool schemas dominate a cold prompt, the trim
+drops thousands of input tokens off every main-model call (around 20% at the
+default union, ~80% trimmed to `terminal` alone; see the benchmark in the release
+notes). A user passing their own `-t`/`--toolsets` bypasses the trimmer entirely.
+
+Both halves are **update-immune**: `tool-trim.sh`, the proxy, and the configs all
+live outside the `hermes-agent` git tree, so `hermes update` never modifies or
+reverts them, and nothing in the agent's source is touched.
 
 ## Quickstart (60 seconds)
 
@@ -28,8 +65,8 @@ auxiliary-task routing, but works with any OpenAI-compatible client.
 # 1 - clone and run the split proxies (compaction + toolchain, recommended)
 git clone https://github.com/prashantjain25/hermes-race-proxy
 cd hermes-race-proxy
-python3 race_proxy_compaction.py --config race_proxy.example.json --verbose &
-python3 race_proxy_toolchain.py --config race_proxy.example.json --port 8978 --verbose &
+python3 race_proxy_compaction.py --config examples/race_proxy.example.yaml --verbose &
+python3 race_proxy_toolchain.py --config examples/race_proxy.example.yaml --port 8978 --verbose &
 
 # 2 - in another terminal, confirm both are alive
 curl -s http://127.0.0.1:8977/health   # compaction: long timeout
@@ -61,7 +98,7 @@ field so you can see who won:
 4. First real answer wins, tagged with `_race_proxy.winner` and `_race_proxy.latency`.
 5. Everyone else still running finishes on their own thread and gets thrown away; nothing waits on the losers.
 
-Point it at any combination of paid, free, local, or hosted backends. Swap the placeholders in `race_proxy.example.json` (or `.yaml`) for your own providers and models.
+Point it at any combination of paid, free, local, or hosted backends. Swap the placeholders in `examples/race_proxy.example.yaml` for your own providers and models.
 
 ## Why this exists
 
@@ -92,8 +129,8 @@ Pointing every task at one shared process meant they all fought over the same co
 The fix is two thin entrypoints over the exact same core logic, not two codebases:
 
 ```bash
-python3 race_proxy_compaction.py --config race_proxy.local.json          # port 8977, long timeout
-python3 race_proxy_toolchain.py  --config race_proxy_toolchain.json      # port 8978, short timeout
+python3 race_proxy_compaction.py --config race_proxy.local.yaml          # port 8977, long timeout
+python3 race_proxy_toolchain.py  --config race_proxy_toolchain.yaml      # port 8978, short timeout
 ```
 
 `race_proxy_compaction.py` keeps the original port (8977), so an existing `auxiliary.compression` config entry needs no changes. Point `auxiliary.mcp`, `auxiliary.skills_hub`, and `auxiliary.title_generation` at `race_proxy_toolchain.py`'s port instead:
@@ -123,6 +160,8 @@ auxiliary:
 | `race_proxy_compaction.py` | Recommended entrypoint for `auxiliary.compression`: long timeout, port 8977. |
 | `race_proxy_toolchain.py` | Recommended entrypoint for `mcp`/`skills_hub`/`title_generation`: short timeout, port 8978. |
 | `race_proxy.py` | Original single-process entrypoint. Still works, one port and one shared timeout for everything pointed at it. |
+| `tool-trim.sh` | Optional launcher: starts the proxy (refcounted), trims the tool catalog via a single `-t` flag built from the live tool list overridden by `config/tools.yaml`, then execs the real CLI. See [Wiring it into Hermes Agent](#wiring-it-into-hermes-agent). |
+| `config/` | Runtime config versioned with the code instead of living in some home dir: `race-models.yaml` (models source of truth) and `race_proxy.local.yaml` (listener/timeout, points at the models file). See [Runtime config](#runtime-config-race-modelsyaml--race_proxylocalyaml). Secret keys never live here. |
 | `race_proxy_core.py` | Backend/race mechanics: assembling a request, racing backends via their configured `caller`, serving the endpoint. Knows nothing about *why* a response might be broken. |
 | `repairs.py` | *Why* a response might be broken and how to fix it, behind a `RepairStrategy` interface. |
 | `response_contracts.py` | *Was* a 200 response actually usable, per backend, behind a `ProviderContract` interface. See [Was the response actually usable?](#was-the-response-actually-usable-response-contracts) below. |
@@ -139,6 +178,50 @@ auxiliary:
 | `examples/streaming_response_example.py` | Runnable, no-network demo of `wire_format.py`: exactly what bytes go out for a `stream: true` vs `stream: false` request. |
 
 Default behavior with none of the extension points configured is an unchanged plain static `backends:` list in config; everything above is opt-in.
+
+## Runtime config (race-models.yaml + race_proxy.local.yaml)
+
+The model lineup is declared once in `config/race-models.yaml`, anchors-first: top-level `intents:` names what the proxy is for, providers are sub-keys under each, and a provider's endpoint lives exactly once under `providers:`.
+
+```yaml
+# config/race-models.yaml
+providers:
+  opencode:                     # keyless free tier — no key at all
+    base_url: https://opencode.ai/zen/v1
+    api_key: ""
+    headers: {}
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_ref: gemini         # resolved at load time, never stored here
+
+intents:
+  compaction:                   # context-compression traffic
+    gemini:
+      - model: gemini-3.1-flash-lite
+        extra_body: { reasoning_effort: minimal }
+      - gemini-3.5-flash-lite
+    opencode:
+      - nemotron-3.5-lightning-free
+  toolchain_mcp:                # mcp / skills_hub traffic
+    opencode:
+      - laguna-s-2.1-free
+      - nemotron-3.5-lightning-free
+```
+
+`config/race_proxy.local.yaml` is the listener/timeout file that points at it. Relative `models_file`/`secrets_file` paths resolve against the config file's own directory, so the whole `config/` can be cloned or moved anywhere:
+
+```yaml
+host: 127.0.0.1
+port: 8977
+timeout: 300
+require_finish_reason: stop
+models_file: race-models.yaml
+pool_file: ~/.hermes/auth.json
+```
+
+Every backend produced from the anchors above binds to its provider's endpoint, deduped by `(model, endpoint)` so a model shared across anchors isn't raced twice. `intents` anchors and `providers` can be split into separate concerns cleanly (e.g. a provider registry that `alias_of`-shares one endpoint under several names).
+
+**API keys are never committed.** A provider points at a key by name (`api_key_ref: gemini`) and the proxy resolves it at load time, in order: the credential pool (`~/.hermes/auth.json` → `credential_pool.<provider>`, seeded with `hermes auth add <provider> --type api-key --api-key <KEY>`), else a local `secrets_file` map, else `api_key_env` from an environment variable. `race_proxy.local.yaml` is gitignored; commit only the secret-free `race-models.yaml` and this README.
 
 ## Was the response actually usable? (response contracts)
 
@@ -265,7 +348,7 @@ PRs adding a new provider file are welcome, with the same "verified live, here's
 
 Two failure modes hit real usage and get auto-repaired without needing to detect the vendor's specific error string:
 
-1. **Structured-output rejection.** A `response_format: {"type": "json_schema", "strict": true, ...}` request 400s/422s at gateways that advertise Chat Completions compatibility without implementing strict-schema enforcement (e.g. opencode.ai/zen fronting `ling-3.0-flash-fin-free`, `nemotron-3.5-lightning-free`). The proxy retries with a fixed ladder: (1) original request, (2) drop `strict: true`, keep the schema, (3) drop `response_format` entirely (caller needs a loose-JSON-extraction fallback for this rung; Hermes's own `title_generator._extract_title_text` already has one).
+1. **Structured-output rejection.** A `response_format: {"type": "json_schema", "strict": true, ...}` request 400s/422s at gateways that advertise Chat Completions compatibility without implementing strict-schema enforcement (e.g. opencode.ai/zen fronting `nemotron-3.5-lightning-free`, `laguna-s-2.1-free`). The proxy retries with a fixed ladder: (1) original request, (2) drop `strict: true`, keep the schema, (3) drop `response_format` entirely (caller needs a loose-JSON-extraction fallback for this rung; Hermes's own `title_generator._extract_title_text` already has one).
 2. **Token starvation.** Free-tier reasoning models can return `200 OK` with empty content and `finish_reason: "length"` because the entire `max_tokens` budget went to hidden reasoning before any visible output. The proxy detects that exact shape (empty content **and** `finish_reason: "length"`) and retries once with `max_tokens` raised to a safe floor (`MIN_SAFE_MAX_TOKENS`, 2000 by default).
 
 Both repairs are request/response-shape driven. Neither cares which vendor produced the failure, so the same ladder applies to any OpenAI-compatible backend without code changes. That portability is also why this lives in the proxy instead of Hermes: Hermes's own `_is_structured_output_rejection` detector in `agent/auxiliary_client.py` only fires on known error-text substrings, so it's always one new vendor behind, and that fix lives inside `hermes-agent`'s own git tree where `hermes update` can overwrite a local patch.
@@ -296,7 +379,7 @@ returned error"}}
 
 No mention of `response_format`, `json_schema`, or `strict`, just a generic wrapper. NVIDIA's own Nemotron docs recommend loose `json_object` mode instead of strict `json_schema` for the same reason; an OpenRouter `ai-sdk-provider` issue (#483) documents the identical failure shape for a different vendor entirely.
 
-Verified end-to-end: a strict-`json_schema` request with `max_tokens: 64` (Hermes's actual `title_generator.py` default) against `ling-3.0-flash-fin-free`, which 400s on the original request every time. Through the proxy: 8/8 trials returned a correct, schema-shaped title with `finish_reason: "stop"`, each via two stacked repairs (`response_format` dropped, then `max_tokens` boosted), tagged `"_race_proxy": {"repaired_rung": "format:2+tokens", ...}`.
+Verified end-to-end: a strict-`json_schema` request with `max_tokens: 64` (Hermes's actual `title_generator.py` default) against `nemotron-3.5-lightning-free`, which 400s on the original request every time. Through the proxy: 8/8 trials returned a correct, schema-shaped title with `finish_reason: "stop"`, each via two stacked repairs (`response_format` dropped, then `max_tokens` boosted), tagged `"_race_proxy": {"repaired_rung": "format:2+tokens", ...}`.
 </details>
 
 ## Connection pooling
@@ -309,13 +392,39 @@ Pool stats are exposed on the health endpoint:
 curl -s http://127.0.0.1:8977/health | python3 -m json.tool
 # {
 #   "status": "ok",
-#   "backends": ["ling", "nemotron", "laguna"],
+#   "backends": ["nemotron", "laguna"],
 #   "timeout": 90,
 #   "connection_pools": [
 #     {"host": "opencode.ai", "port": 443, "in_use": 1, "idle": 2, "max_size": 8}
 #   ]
 # }
 ```
+
+## Toolset trimming (tool-trim.sh)
+
+`tool-trim.sh` is the launcher that wraps the real CLI (`hermes-real`): it keeps
+the race proxy up (refcounted, torn down when the last session exits) and then
+runs `hermes`. Before it does, it computes a single `-t` union for the call:
+
+    base     = live enabled toolsets + MCP servers, from `hermes tools list`
+    override = config/tools.yaml   (state: ON -> force in,  OFF -> force out)
+    result   = (base + forced-in) - forced-out, one sorted, comma-joined -t flag
+
+Because `-t` is exclusive, the union always starts from hermes's own live list.
+That keeps it update-immune in both directions: `hermes update` auto-adds new
+toolsets with hermes's default state (the trim never has to chase the catalog),
+and the YAML only grows when you want a state that differs from a default. A
+`state: OFF` row never reaches the flag; flip a row to `ON` and it is force-in.
+Toolsets are the control unit — `state` toggles a whole toolset, not individual
+tools — and MCP servers are keyed by their server name (`exa`), not the docs'
+`mcp-<server>` form (on this install `-t "exa"` works, `-t "mcp-exa"` does not).
+A user-supplied `-t`/`--toolsets` bypasses the YAML entirely.
+
+The payoff is on the main model's cold prompt, where eager tool schemas dominate
+the input budget. Measured on `claude-sonnet-5`: the default 13-toolset union is
+around 22.5-24K input tokens, trimming the non-essential `delegation`/`cronjob`/
+`browser` toolsets drops it to ~19.3K, and a `terminal`-only set is ~4.8K. See
+the full benchmark table in [CHANGELOG.md](CHANGELOG.md).
 
 ## Wiring it into Hermes Agent
 
@@ -331,6 +440,16 @@ auxiliary:
 ```
 
 Start the proxy before starting Hermes, and let your process supervisor of choice (systemd, launchd, pm2, whatever) keep it running.
+
+Alternatively, wrap the real CLI with `tool-trim.sh` so a single daemon is shared across interactive shells and background processes — it starts the proxy on the first invocation, builds a trimmed `-t` toolset union from the live tool list plus `config/tools.yaml` overrides, and tears the proxy down when the last one exits (refcounted), passing every CLI arg through untouched (a user-supplied `-t`/`--toolsets` bypasses the trimmer):
+
+```bash
+# ~/.local/bin/hermes  →  thin shim:
+exec "$HOME/<clone>/tool-trim.sh" "$@"
+# ~/.zshrc             →  alias hermes="$HOME/<clone>/tool-trim.sh"
+```
+
+The real CLI, this repo, and `tool-trim.sh` all live outside the agent's own install tree, so an agent update (which pulls that tree) never touches them — nothing in the agent's source is modified, so there's nothing to revert before an update, and the hook always survives it.
 
 Compaction calls in particular send `stream: true` when Hermes has a progress hook active on that call. The proxy answers with a single SSE `delta` chunk carrying the complete response, not a real token-by-token stream, but enough for Hermes's own stream decoder to read real content back instead of aggregating an empty string from a response it couldn't parse as a stream. Verified end to end against the real `openai` Python SDK against a live compaction-shaped request; see [CHANGELOG.md](CHANGELOG.md) for the specific failure this replaced. See `examples/streaming_response_example.py` for a standalone, no-network demo of exactly what bytes go out on the wire either way.
 
@@ -366,6 +485,10 @@ Compaction calls in particular send `stream: true` when Hermes has a progress ho
 | `backends[].repair_token_starvation` | Default `true`. Retries once with `max_tokens` raised to `MIN_SAFE_MAX_TOKENS` (2000; edit the constant in `race_proxy.py` for a different floor). |
 | `backends[].caller` | `"http"` (default) or `"cli"`. See [Reaching a backend](#reaching-a-backend-http-or-cli-callers) above. |
 | `backends[].command` | Only used when `caller: "cli"`. Argv list for the vendor's official CLI. |
+| `models_file` | Path to `race-models.yaml` (resolved relative to this config file). When set and no inline `backends:` is present, every model under the `intents:` anchors becomes the raced backends. |
+| `pool_file` | Credential-pool JSON used to resolve any `api_key_ref`. Hermes default is `~/.hermes/auth.json` → `credential_pool.<provider>`. |
+| `secrets_file` | Optional YAML/JSON map of `ref: key` for providers not covered by the pool. |
+| `intent` | Optional — expand only this one anchor from `models_file` instead of all anchors. |
 
 ## Extending: custom repairs / discovery / providers
 

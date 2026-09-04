@@ -38,6 +38,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -474,6 +475,103 @@ class RaceProxyHandler(BaseHTTPRequestHandler):
             self._send_json(502, {"error": {"message": result["error"], "type": "race_proxy_all_backends_failed"}})
 
 
+def _pool_token(pool_file: Optional[str], provider: str) -> str:
+    """Fetch an API key for ``provider`` from Hermes's credential pool
+    (~/.hermes/auth.json -> credential_pool.<provider>), returning the
+    lowest-priority entry with a non-empty access_token. Returns '' when the
+    pool is absent, unparseable, or lacks the provider, so callers can fall
+    back to a secrets map or env var."""
+    try:
+        path = os.path.expanduser(pool_file or "~/.hermes/auth.json")
+        with open(path, "r") as f:
+            auth = json.load(f)
+        entries = (auth.get("credential_pool") or {}).get(provider) or []
+        ranked = sorted(entries, key=lambda e: (e.get("priority", 0), e.get("id", "")))
+        for e in ranked:
+            tok = (e.get("access_token") or "").strip()
+            if tok:
+                return tok
+    except Exception as exc:  # missing/corrupt pool -> no key, caller falls back
+        logger.debug("no credential-pool token for %r: %s", provider, exc)
+    return ""
+
+
+def build_backends_from_models_file(models_file: str, intent: Optional[str], secrets: Optional[dict] = None, pool_file: Optional[str] = None) -> list[dict]:
+    """Resolve a ``models_file`` (race-models.yaml) into backend config dicts.
+
+    Two top-level maps:
+      providers: { name: { base_url, [api_key_ref|api_key_env|api_key], headers, [alias_of] } }  # endpoint registry
+      intents:   { <anchor>: { <provider>: [models...] } }            # anchors first, providers as sub-keys
+
+    A model under a provider binds to that provider's endpoint (anchors are
+    the top-level "what the proxy is for", providers are sub-keys). API keys
+    are NOT stored inline in the models doc: a provider references one via
+    ``api_key_ref`` (a name looked up in the ``secrets`` map, e.g. from a
+    user-supplied secrets file) or ``api_key_env`` (an environment variable),
+    so keys are supplied separately/manually and never committed. ``alias_of``
+    lets two provider names share one endpoint, e.g. a vendor API that is the
+    same as another provider's. If ``intent`` is set, only that anchor is
+    expanded; otherwise all anchors are. Identical (model, endpoint) entries
+    are deduped so a model shared across anchors isn't raced twice. Returns
+    plain backend config dicts for the normal build path.
+    """
+    data = load_config(models_file) or {}
+    providers = data.get("providers", {}) or {}
+    intents = data.get("intents") or {}
+    if not isinstance(intents, dict):
+        raise ValueError(f"models_file {models_file}: expected top-level `intents:` (anchor -> provider -> models)")
+
+    def resolve(name: str) -> dict:
+        seen: set = set()
+        cur = name
+        while isinstance(providers.get(cur), dict) and providers[cur].get("alias_of"):
+            if cur in seen:
+                break
+            seen.add(cur)
+            cur = providers[cur]["alias_of"]
+        return providers.get(cur, {})
+
+    seen_key: set = set()
+    backends: list[dict] = []
+    for iname, prov_map in intents.items():
+        if intent and iname != intent:
+            continue
+        if not isinstance(prov_map, dict):
+            continue
+        for pname, models in prov_map.items():
+            pconf = resolve(pname)
+            if not isinstance(pconf, dict):
+                raise ValueError(f"models_file {models_file}: provider '{pname}' (intent '{iname}') has no entry in `providers:`")
+            base_url = (pconf.get("base_url") or "").rstrip("/")
+            api_key = (pconf.get("api_key") or "").strip()
+            if not api_key and pconf.get("api_key_ref"):
+                ref = pconf["api_key_ref"]
+                # Prefer Hermes's credential pool for the reference; fall back
+                # to the secrets map (e.g. a local secrets file), so keys stay
+                # out of the source-of-truth doc.
+                api_key = _pool_token(pool_file, ref) or (secrets or {}).get(ref, "")
+            elif not api_key and pconf.get("api_key_env"):
+                api_key = os.environ.get(pconf["api_key_env"], "")
+            headers = pconf.get("headers", {})
+            if isinstance(models, str):
+                models = [models]
+            for m in models:
+                extra_body = pconf.get("extra_body")
+                if isinstance(m, dict):
+                    extra_body = m.get("extra_body", extra_body)
+                    m = m.get("model") or ""
+                key = (m, base_url)
+                if key in seen_key:
+                    continue
+                seen_key.add(key)
+                backends.append({
+                    "name": m, "base_url": base_url, "model": m,
+                    "api_key": api_key, "headers": headers,
+                    "extra_body": extra_body,
+                })
+    return backends
+
+
 def load_config(path: Optional[str]) -> dict:
     if path is None:
         return {}
@@ -483,8 +581,34 @@ def load_config(path: Optional[str]) -> dict:
         if yaml is None:
             print("PyYAML not installed; install with `pip install pyyaml` or use a .json config", file=sys.stderr)
             sys.exit(1)
-        return yaml.safe_load(text) or {}
-    return json.loads(text)
+        cfg = yaml.safe_load(text) or {}
+    else:
+        cfg = json.loads(text)
+    cfg_dir = os.path.dirname(os.path.abspath(path)) if path else "."
+
+    def _abspath(p: str) -> str:
+        p = os.path.expanduser(p)
+        return p if os.path.isabs(p) else os.path.join(cfg_dir, p)
+
+    # Single-file model source of truth: a ``models_file`` pointer replaces
+    # the inline ``backends:`` list entirely (dedupes endpoints per provider,
+    # binds each model to its provider under an intent). Inline ``backends:``
+    # still works unchanged when no ``models_file`` is set. Relative paths in
+    # ``models_file``/``secrets_file`` resolve against the config file's dir,
+    # so the whole ``config/`` can move or be cloned anywhere.
+    mf = cfg.get("models_file")
+    if mf and not cfg.get("backends"):
+        _secrets: dict = {}
+        sf = cfg.get("secrets_file")
+        if sf:
+            try:
+                _secrets = load_config(_abspath(sf)) or {}
+            except Exception as e:
+                logger.warning("could not load secrets_file %s: %s", sf, e)
+        cfg["backends"] = build_backends_from_models_file(
+            _abspath(mf), cfg.get("intent"), _secrets, cfg.get("pool_file"),
+        )
+    return cfg
 
 
 def build_registry(cfg: dict) -> RepairRegistry:

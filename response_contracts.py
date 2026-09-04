@@ -98,7 +98,7 @@ vendor-specific) needs to change:
 Registering a contract
 -----------------------
 Call ``registry.register("<backend-name-from-config>", contract)`` —
-matching key is a backend's ``name`` field in ``race_proxy.local.json``
+matching key is a backend's ``name`` field in ``race_proxy.local.yaml``
 (e.g. ``"nemotron"``, ``"gemini"``), not the model string. Nothing is
 pre-registered by default (see :func:`_build_default_registry`) —
 every backend gets :class:`GenericOpenAIContract` until a real failure
@@ -441,7 +441,7 @@ def _build_default_registry() -> ContractRegistry:
     generic contract already handles every failure-shape-inside-a-200
     pattern actually observed (reasoning starvation, safety blocks,
     streaming-delta leakage) without vendor-specific code. Adding a
-    backend to ``race_proxy.local.json`` needs zero changes here.
+    backend to ``race_proxy.local.yaml`` needs zero changes here.
 
     See :class:`ProviderContract`'s docstring, "Escape hatch: when a
     vendor genuinely needs its own file" section, for the (expected to

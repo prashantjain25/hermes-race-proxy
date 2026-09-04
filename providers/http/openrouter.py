@@ -10,7 +10,7 @@ Verified live (Aug 2026):
   even against a `:free`-suffixed model. requires_api_key = True.
 - Free-tier models on this vendor are identified by an explicit
   `:free` suffix on the model ID (e.g.
-  "inclusionai/ling-3.0-flash-fin:free"), confirmed present in the
+  "mistralai/mistral-small-3.1-24b-instruct:free"), confirmed present in the
   live /models listing (8+ found in a single page during this
   session's check). Still needs a key to actually call, per above.
 - OpenRouter's own docs recommend HTTP-Referer and X-Title headers for
