@@ -32,7 +32,6 @@ intents:
       - model: gemini-3.1-flash-lite
         extra_body:
           reasoning_effort: minimal
-      - gemini-3.5-flash-lite
     opencode:
       - nemotron-3.5-lightning-free
 

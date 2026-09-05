@@ -3,7 +3,8 @@ __pycache__/
 .venv/
 *.log
 race_proxy.local.json
-race_proxy.local.yaml
+race_proxy_compaction.local.yaml
+race_proxy_toolchain.local.yaml
 plan.md
 reddit_post_draft.txt
 reddit_intro.txt

@@ -1,98 +1,94 @@
-# toolset-control.yaml -- OVERRIDE layer for tool-trim.sh
+# tools.yaml -- SINGLE source of truth for hermes tool provisioning.
 # -----------------------------------------------------------------------------
-# PURPOSE
-#   hermes already stores which tools are enabled/disabled, and the command
-#   "hermes tools list --platform cli" reflects that live state. race-proxy.sh
-#   uses hermes's LIVE state as its BASE set and this YAML as an OVERRIDE. Every
-#   resulting enabled name is passed to a single "hermes -t <names>" invocation.
-#   -t is EXCLUSIVE, so the union starts from hermes's live base or load-bearing
-#   tools would be dropped.
+# Read by tool-trim.sh (the only lever). There is no separate allowlist or gate
+# file -- this YAML is the one policy. Every toolset is under one category block
+# (builtin / plugin / mcp) keyed by HERMES'S REAL toolset names (see
+# `hermes tools list`). Inside a block, any server/tool can be added or removed;
+# `state` is the only enable/disable switch per entry.
 #
-# ONLY rows with state: ON ever reach the -t flag. Every state: OFF row
-#   (including the non-CLI / composite / reference toolsets below) is a no-op:
-#   it is never forced into -t, whether or not it is in hermes's live base.
+# What tool-trim.sh does with it, per launch:
+#   base = live enabled toolsets from `hermes tools list` (so load-bearing
+#          built-ins are never dropped)
+#   override: every row with state: ON is forced IN to the -t union, every
+#             row with state: OFF is forced OUT.
+#   mcp:      rows under the `mcp` block additionally drive
+#             config.yaml's mcp_servers.<name>.enabled (ON -> true, OFF -> false)
+#             merging .env/allowable-server auto-connect.
 #
-# PER-ROW FIELDS
-#   -t        the toolset name passed to -t (the control unit). For MCP servers
-#             this is the SERVER name (exa). NOTE: the docs call MCP toolsets
-#             "mcp-<server>" (e.g. mcp-exa), but on this install -t "exa" works
-#             and -t "mcp-exa" does NOT (verified by request tokens).
-#   state     ON = force in to the -t union; OFF = never present. -t is
-#             toolset-granular; per-tool OFF inside a toolset needs MCP per-server
-#             tools.include/exclude, not -t.
-#   category  grouping for navigation.
-#   tools     the REAL tool names hermes registers. Built-in names are verbatim;
-#             MCP tools use the mcp__<server>__<tool> prefix.
+# `-t` is EXCLUSIVE, so the union always starts from the live base. Only rows
+# with state: ON ever reach -t. Non-CLI / composite / reference toolsets are
+# listed in the `reference` block and are never ON by default.
 #
-# COMPOSITE toolsets (safe, debugging, coding, search) expand to their member
-#   toolsets when passed to -t. Their members include web and search, which may
-#   be OFF above, so flipping a composite ON re-adds its members regardless of
-#   those rows. Leave composites OFF unless you intend the whole bundle.
-#
-# PLATFORM PRESETS (hermes-cli, hermes-acp, hermes-telegram, hermes-gateway,
-#   ...) override the whole CLI surface and are NOT per-tool toggles; do not list
-#   one here. The wildcard all (or asterisk) expands to every registered toolset.
+# PER-ENTRY FIELDS
+#   -t        for builtin/plugin: the hermes toolset name (== the key).
+#             for MCP: the SERVER name (e.g. exa) -- on this install `-t exa`
+#             works and `-t mcp-exa` does NOT (verified by request tokens).
+#   state     ON = force in; OFF = never in -t.
+#   tools     the REAL tool names hermes registers. Built-ins are verbatim;
+#             MCP tools use the mcp__<server>__<tool> prefix. Reference only.
+#   category  optional display grouping (not load-bearing).
 # =============================================================================
 
-tools:
-  # ---- Web Search & Retrieval
-  web:            { state: OFF, -t: web,         category: "Web Search & Retrieval", tools: [web_search, web_extract] }
-  search:         { state: OFF, -t: search,       category: "Web Search & Retrieval", tools: [web_search] }
-  x_search:       { state: OFF, -t: x_search,     category: "Web Search & Retrieval", tools: [x_search] }
+toolsets:
+  # ---- Built-in toolsets (hermes tools list: "Built-in toolsets (cli)") ----
+  builtin:
+    # Web Search & Retrieval
+    web:            { state: OFF, tools: [web_search, web_extract] }
+    search:         { state: OFF, tools: [web_search] }
+    x_search:       { state: OFF, tools: [x_search] }
+    # Browser & Navigation
+    browser:        { state: ON,  tools: [browser_navigate, browser_back, browser_click, browser_console, browser_get_images, browser_press, browser_scroll, browser_snapshot, browser_type, browser_vision, browser_cdp, browser_dialog] }
+    # Dev & Execution
+    terminal:       { state: ON,  tools: [terminal, process] }
+    file:           { state: ON,  tools: [read_file, write_file, patch, search_files] }
+    code_execution: { state: ON,  tools: [execute_code] }
+    # Knowledge & Memory
+    memory:         { state: ON,  tools: [memory] }
+    context_engine: { state: OFF, tools: [] }
+    session_search: { state: ON,  tools: [session_search] }
+    skills:         { state: ON,  tools: [skill_view, skill_manage, skills_list] }
+    # Tasks & Workflow
+    todo:           { state: ON,  tools: [todo] }
+    clarify:        { state: ON,  tools: [clarify] }
+    delegation:     { state: ON,  tools: [delegate_task] }
+    cronjob:        { state: ON,  tools: [cronjob] }
+    # Media, Vision & Generation
+    vision:         { state: OFF, tools: [vision_analyze] }
+    video:          { state: OFF, tools: [video_analyze] }
+    image_gen:      { state: OFF, tools: [image_generate] }
+    video_gen:      { state: OFF, tools: [video_generate, xai_video_edit, xai_video_extend] }
+    # Speech
+    tts:            { state: OFF, tools: [text_to_speech] }
+    stt:            { state: OFF, tools: [] }
+    # Smart Home & Desktop
+    homeassistant:  { state: OFF, tools: [ha_call_service, ha_get_state, ha_list_entities, ha_list_services] }
+    computer_use:   { state: OFF, tools: [computer_use] }
 
-  # ---- Browser & Navigation
-  browser:        { state: ON,  -t: browser,      category: "Browser & Navigation",  tools: [browser_navigate, browser_back, browser_click, browser_console, browser_get_images, browser_press, browser_scroll, browser_snapshot, browser_type, browser_vision, browser_cdp, browser_dialog] }
+  # ---- Plugin toolsets (hermes tools list: "Plugin toolsets (cli)") ----
+  plugin:
+    a2a:            { state: OFF, tools: [] }
 
-  # ---- Dev & Execution (Terminal, Files, Code)
-  terminal:       { state: ON,  -t: terminal,     category: "Dev & Execution",       tools: [terminal, process] }
-  file:           { state: ON,  -t: file,         category: "Dev & Execution",       tools: [read_file, write_file, patch, search_files] }
-  code_execution: { state: ON,  -t: code_execution, category: "Dev & Execution",     tools: [execute_code] }
+  # ---- MCP servers (hermes tools list: "MCP servers"; -t = server name) ----
+  # state here drives BOTH -t inclusion AND config.yaml mcp_servers.<name>.enabled
+  mcp:
+    exa:            { state: ON,  tools: [mcp__exa__web_search_exa, mcp__exa__web_fetch_exa, mcp__exa__get_prompt, mcp__exa__list_prompts, mcp__exa__list_resources, mcp__exa__read_resource] }
+    gemini-image:   { state: OFF, tools: [mcp__gemini_image__generate_image, mcp__gemini_image__edit_image, mcp__gemini_image__list_models, mcp__gemini_image__get_prompt, mcp__gemini_image__list_prompts, mcp__gemini_image__list_resources, mcp__gemini_image__read_resource] }
+    nimble:         { state: ON,  tools: [mcp__nimble__nimble_search, mcp__nimble__nimble_extract, mcp__nimble__nimble_extract_async, mcp__nimble__nimble_extract_templates_generate, mcp__nimble__nimble_extract_templates_generation_status, mcp__nimble__nimble_extract_templates_get, mcp__nimble__nimble_extract_templates_list, mcp__nimble__nimble_extract_templates_run, mcp__nimble__nimble_extract_templates_run_async, mcp__nimble__nimble_extract_templates_update_from_template, mcp__nimble__nimble_map, mcp__nimble__nimble_crawl_list, mcp__nimble__nimble_crawl_run, mcp__nimble__nimble_crawl_status, mcp__nimble__nimble_crawl_terminate, mcp__nimble__nimble_agents_get, mcp__nimble__nimble_agents_list, mcp__nimble__nimble_agents_create, mcp__nimble__nimble_agents_update, mcp__nimble__nimble_agents_delete, mcp__nimble__nimble_agents_run, mcp__nimble__nimble_agents_run_status, mcp__nimble__nimble_agents_run_result, mcp__nimble__nimble_agents_runs_list, mcp__nimble__nimble_agent_templates_list, mcp__nimble__nimble_agent_templates_get, mcp__nimble__nimble_task_results, mcp__nimble__read_resource, mcp__nimble__get_prompt, mcp__nimble__list_prompts, mcp__nimble__list_resources] }
 
-  # ---- Knowledge & Memory
-  memory:         { state: ON,  -t: memory,       category: "Knowledge & Memory",    tools: [memory] }
-  context_engine: { state: OFF, -t: context_engine, category: "Knowledge & Memory",  tools: [] }
-  session_search: { state: ON,  -t: session_search, category: "Knowledge & Memory",  tools: [session_search] }
-  skills:         { state: ON,  -t: skills,       category: "Knowledge & Memory",    tools: [skill_view, skill_manage, skills_list] }
-
-  # ---- Tasks & Workflow
-  todo:           { state: ON,  -t: todo,         category: "Tasks & Workflow",      tools: [todo] }
-  clarify:        { state: ON,  -t: clarify,      category: "Tasks & Workflow",      tools: [clarify] }
-  delegation:     { state: ON,  -t: delegation,   category: "Tasks & Workflow",      tools: [delegate_task] }
-  cronjob:        { state: ON,  -t: cronjob,      category: "Tasks & Workflow",      tools: [cronjob] }
-
-  # ---- Media, Vision & Generation
-  vision:         { state: OFF, -t: vision,       category: "Media, Vision & Gen",   tools: [vision_analyze] }
-  video:          { state: OFF, -t: video,        category: "Media, Vision & Gen",   tools: [video_analyze] }
-  image_gen:      { state: OFF, -t: image_gen,    category: "Media, Vision & Gen",   tools: [image_generate] }
-  video_gen:      { state: OFF, -t: video_gen,    category: "Media, Vision & Gen",   tools: [video_generate, xai_video_edit, xai_video_extend] }
-
-  # ---- Speech
-  tts:            { state: OFF, -t: tts,          category: "Speech",                tools: [text_to_speech] }
-  stt:            { state: OFF, -t: stt,          category: "Speech",                tools: [] }
-
-  # ---- Smart Home & Desktop
-  homeassistant:  { state: OFF, -t: homeassistant, category: "Smart Home & Desktop", tools: [ha_call_service, ha_get_state, ha_list_entities, ha_list_services] }
-  computer_use:   { state: OFF, -t: computer_use, category: "Smart Home & Desktop",  tools: [computer_use] }
-
-  # ---- MCP SERVERS (dynamic)
-  # -t here is the server name; real tools use the mcp__<server>__<tool> prefix.
-  exa:            { state: ON,  -t: exa,          category: "MCP Servers",           tools: [mcp__exa__web_search_exa, mcp__exa__web_fetch_exa, mcp__exa__get_prompt, mcp__exa__list_prompts, mcp__exa__list_resources, mcp__exa__read_resource] }
-  gemini-image:   { state: ON,  -t: gemini-image, category: "MCP Servers",           tools: [mcp__gemini_image__generate_image, mcp__gemini_image__edit_image, mcp__gemini_image__list_models, mcp__gemini_image__get_prompt, mcp__gemini_image__list_prompts, mcp__gemini_image__list_resources, mcp__gemini_image__read_resource] }
-
-  # ---- Plugins (dynamic)
-  a2a:            { state: OFF, -t: a2a,          category: "Plugins",               tools: [] }
-
-  # ---- Reference: non-CLI / composite toolsets (all OFF, never in -t)
-  safe:           { state: OFF, -t: safe,         category: "Reference (composite)", tools: [image_generate, vision_analyze, web_extract, web_search] }
-  debugging:      { state: OFF, -t: debugging,    category: "Reference (composite)", tools: [file, terminal, web] }
-  coding:         { state: OFF, -t: coding,       category: "Reference (composite)", tools: [file, terminal, search, web, skills, browser, todo, memory, session_search, clarify, code_execution, delegation, vision] }
-  kanban:         { state: OFF, -t: kanban,       category: "Reference (kanban opt-in)", tools: [kanban_attach, kanban_attach_url, kanban_attachments, kanban_block, kanban_comment, kanban_complete, kanban_create, kanban_heartbeat, kanban_link, kanban_list, kanban_request_changes, kanban_request_review, kanban_show, kanban_unblock] }
-  project:        { state: OFF, -t: project,      category: "Reference (desktop)",   tools: [project_create, project_list, project_switch] }
-  desktop_ui:     { state: OFF, -t: desktop_ui,   category: "Reference (desktop)",   tools: [annotate_preview, close_preview, close_terminal, drive_preview, focus_pane, open_preview, react_to_message, read_preview, read_terminal, read_window_below, tour, tip] }
-  discord:        { state: OFF, -t: discord,      category: "Reference (gateway)",   tools: [discord] }
-  discord_admin:  { state: OFF, -t: discord_admin, category: "Reference (gateway)",  tools: [discord_admin] }
-  feishu_doc:     { state: OFF, -t: feishu_doc,   category: "Reference (feishu)",    tools: [feishu_doc_read] }
-  feishu_drive:   { state: OFF, -t: feishu_drive, category: "Reference (feishu)",    tools: [feishu_drive_add_comment, feishu_drive_list_comments, feishu_drive_list_comment_replies, feishu_drive_reply_comment] }
-  spotify:        { state: OFF, -t: spotify,      category: "Reference (plugin)",    tools: [spotify_albums, spotify_devices, spotify_library, spotify_playback, spotify_playlists, spotify_queue, spotify_search] }
-  yuanbao:        { state: OFF, -t: yuanbao,      category: "Reference (yuanbao)",   tools: [yb_query_group_info, yb_query_group_members, yb_search_sticker, yb_send_dm, yb_send_sticker] }
-  messaging:      { state: OFF, -t: messaging,    category: "Reference (gateway)",   tools: [] }
+# ---- Reference: non-CLI / composite / opt-in toolsets (never ON by default) --
+# Listed for documentation and one-shot opt-in. Do not edit these to ON unless
+# you intend the whole bundle they pull in.
+reference:
+  safe:       { tools: [image_generate, vision_analyze, web_extract, web_search] }
+  debugging:  { tools: [file, terminal, web] }
+  coding:     { tools: [file, terminal, search, web, skills, browser, todo, memory, session_search, clarify, code_execution, delegation, vision] }
+  kanban:     { tools: [kanban_attach, kanban_attach_url, kanban_attachments, kanban_block, kanban_comment, kanban_complete, kanban_create, kanban_heartbeat, kanban_link, kanban_list, kanban_request_changes, kanban_request_review, kanban_show, kanban_unblock] }
+  project:    { tools: [project_create, project_list, project_switch] }
+  desktop_ui: { tools: [annotate_preview, close_preview, close_terminal, drive_preview, focus_pane, open_preview, react_to_message, read_preview, read_terminal, read_window_below, tour, tip] }
+  discord:    { tools: [discord] }
+  discord_admin: { tools: [discord_admin] }
+  feishu_doc: { tools: [feishu_doc_read] }
+  feishu_drive: { tools: [feishu_drive_add_comment, feishu_drive_list_comments, feishu_drive_list_comment_replies, feishu_drive_reply_comment] }
+  spotify:    { tools: [spotify_albums, spotify_devices, spotify_library, spotify_playback, spotify_playlists, spotify_queue, spotify_search] }
+  yuanbao:    { tools: [yb_query_group_info, yb_query_group_members, yb_search_sticker, yb_send_dm, yb_send_sticker] }
+  messaging:  { tools: [] }

@@ -1,12 +1,19 @@
 # hermes-race-proxy
 
-A tiny, zero-dependency local HTTP proxy that races several OpenAI-compatible
-LLM backends against each other and hands back whichever one answers first with
-something usable — plus a launcher that trims a Hermes session's tool catalog
-down to a single `-t` union, cutting the eager tool-schema payload off every
-main-model call. Built for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-auxiliary-task routing, but the proxy works with any OpenAI-compatible client
-and the trimmer with any `hermes` invocation.
+A zero-dependency, OpenAI-compatible local **LLM race proxy** for macOS and
+Linux. It fans one `/v1/chat/completions` request out to several providers at
+once and returns whichever answers first with a usable result — plus a launcher
+that wires it into any agent CLI and trims the eager tool-schema payload off
+every model call. Works with any OpenAI-compatible client (curl, LangChain, the
+OpenAI SDK, agent frameworks); the [60-second install](#quickstart-60-seconds)
+is a single `install.sh` with no runtime or toolchain to fetch on the target.
+Designed for small machines (ARM64 SBCs and Apple Silicon alike) and for
+low-memory installs where a lean Python runtime already exists.
+
+**What problem it solves:** free/local LLM tiers are flaky — they 400, return
+empty reasoning-budget answers, or flap between 200/503 minute to minute.
+Racing several of them means one model's bad day never takes the whole pipeline
+down, and a paid model's budget is held for calls that genuinely need it.
 
 **Contents**
 - [Features](#features)
@@ -15,13 +22,13 @@ and the trimmer with any `hermes` invocation.
 - [Why this exists](#why-this-exists)
 - [Two proxies, one core: toolchain vs compaction](#two-proxies-one-core-toolchain-vs-compaction)
 - [Project layout](#project-layout)
-- [Runtime config (race-models.yaml + race_proxy.local.yaml)](#runtime-config-race-modelsyaml--race_proxylocalyaml)
+- [Runtime config (race-models.yaml + race_proxy_compaction.local.yaml)](#runtime-config-race-modelsyaml--race_proxy_compactionlocalyaml)
 - [Was the response actually usable? (response contracts)](#was-the-response-actually-usable-response-contracts)
 - [Reaching a backend: HTTP or CLI (callers)](#reaching-a-backend-http-or-cli-callers)
 - [Providers and pooling (N providers x M models)](#providers-and-pooling-n-providers-x-m-models)
 - [Built-in repairs (structured-output, token-starvation)](#built-in-repairs-structured-output-token-starvation)
 - [Connection pooling](#connection-pooling)
-- [Toolset trimming (tool-trim.sh)](#toolset-trimming-tool-trimsh)
+- [Toolset trimming (hermes-warmup.sh)](#toolset-trimming-hermes-warmupsh)
 - [Wiring it into Hermes Agent](#wiring-it-into-hermes-agent)
 - [Config reference](#config-reference)
 - [Extending: custom repairs / discovery / providers](#extending-custom-repairs--discovery--providers)
@@ -46,7 +53,7 @@ starvation (retry with `max_tokens` raised to a safe floor). Providers, callers,
 and startup discovery are **pluggable** — one file per vendor transport (HTTP or
 CLI), a pool builder for N providers x M models, and a discovery policy you own.
 
-**Live toolset trimming.** `tool-trim.sh` wraps `hermes` (the real CLI), starts
+**Live toolset trimming.** `hermes-warmup.sh` wraps `hermes` (the real CLI), starts
 the race proxy (refcounted, torn down when the last session exits), and computes
 a single `-t` union from hermes's own live tool list overridden by
 `config/tools.yaml` (`state: ON` forces a toolset in, `OFF` forces it out).
@@ -55,30 +62,44 @@ drops thousands of input tokens off every main-model call (around 20% at the
 default union, ~80% trimmed to `terminal` alone; see the benchmark in the release
 notes). A user passing their own `-t`/`--toolsets` bypasses the trimmer entirely.
 
-Both halves are **update-immune**: `tool-trim.sh`, the proxy, and the configs all
+Both halves are **update-immune**: `hermes-warmup.sh`, the proxy, and the configs all
 live outside the `hermes-agent` git tree, so `hermes update` never modifies or
 reverts them, and nothing in the agent's source is touched.
 
 ## Quickstart (60 seconds)
 
 ```bash
-# 1 - clone and run the split proxies (compaction + toolchain, recommended)
+# 1 - install into ~/.hermes (creates a self-contained copy under HERMES_HOME,
+#     generates the two per-machine proxy configs, wires the `hermes` shim
+#     + shell alias). Nothing is fetched; the target needs no runtime installed.
 git clone https://github.com/prashantjain25/hermes-race-proxy
 cd hermes-race-proxy
-python3 race_proxy_compaction.py --config examples/race_proxy.example.yaml --verbose &
-python3 race_proxy_toolchain.py --config examples/race_proxy.example.yaml --port 8978 --verbose &
+./install.sh --commit
 
-# 2 - in another terminal, confirm both are alive
-curl -s http://127.0.0.1:8977/health   # compaction: long timeout
-curl -s http://127.0.0.1:8978/health   # toolchain: short timeout
+# 2 - in a new shell, the proxies start on first launch (refcounted)
+hermes   # or, to start them standalone for a curl-only test:
+~/.hermes/hermes-race-proxy/hermes-warmup.sh --version   # starts both, then returns
 
-# 3 - send a real chat request, watch who wins the race
+# 3 - confirm both are alive
+curl -s http://127.0.0.1:8977/health   # compaction proxy: 300s timeout
+curl -s http://127.0.0.1:8978/health   # toolchain proxy:  60s  timeout
+
+# 4 - send a real chat request, watch who wins the race
 curl -s -X POST http://127.0.0.1:8977/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Say hi in 3 words"}],"max_tokens":1500}'
 ```
 
-Prefer one process instead? `race_proxy.py` still works exactly as before, one port, one shared timeout for everything pointed at it. See [Two proxies, one core: toolchain vs compaction](#two-proxies-one-core-toolchain-vs-compaction) for why the split exists and when it actually matters.
+The installer provisions two proxy processes on two ports so a slow
+context-compaction call can never starve a fast toolchain call:
+
+- **compaction proxy** — `:8977`, 300s timeout, for large context-summary work.
+- **toolchain proxy** — `:8978`, 60s timeout, for fast AI-agent tool calls.
+
+Both are refcounted: they start once, are shared by every concurrent session,
+and tear down when the last one exits. The installed tree under `~/.hermes` is
+self-contained (same folder structure as the repo) and survives agent updates —
+the proxy, launcher, and configs all live outside the agent's own install tree.
 
 You get back a normal OpenAI-shape `chat.completion` object, plus one extra
 field so you can see who won:
@@ -129,8 +150,8 @@ Pointing every task at one shared process meant they all fought over the same co
 The fix is two thin entrypoints over the exact same core logic, not two codebases:
 
 ```bash
-python3 race_proxy_compaction.py --config race_proxy.local.yaml          # port 8977, long timeout
-python3 race_proxy_toolchain.py  --config race_proxy_toolchain.yaml      # port 8978, short timeout
+python3 race_proxy_compaction.py --config race_proxy_compaction.local.yaml # port 8977, long timeout
+python3 race_proxy_toolchain.py  --config race_proxy_toolchain.local.yaml # port 8978, short timeout
 ```
 
 `race_proxy_compaction.py` keeps the original port (8977), so an existing `auxiliary.compression` config entry needs no changes. Point `auxiliary.mcp`, `auxiliary.skills_hub`, and `auxiliary.title_generation` at `race_proxy_toolchain.py`'s port instead:
@@ -151,17 +172,17 @@ auxiliary:
     base_url: http://127.0.0.1:8978/v1
 ```
 
-`race_proxy.py` (the original single-process entrypoint) still works unmodified if you only run one auxiliary task through this proxy, or you'd rather manage one process than two. Nothing about the split changes what `race_proxy_core.py` does; it's the same racing/repair/contract logic served on two ports with two default timeouts instead of one.
+Nothing about the split changes what `race_proxy_core.py` does; it's the same racing/repair/contract logic served on two ports with two default timeouts instead of one.
 
 ## Project layout
 
 | File | What it is |
 |---|---|
-| `race_proxy_compaction.py` | Recommended entrypoint for `auxiliary.compression`: long timeout, port 8977. |
-| `race_proxy_toolchain.py` | Recommended entrypoint for `mcp`/`skills_hub`/`title_generation`: short timeout, port 8978. |
-| `race_proxy.py` | Original single-process entrypoint. Still works, one port and one shared timeout for everything pointed at it. |
-| `tool-trim.sh` | Optional launcher: starts the proxy (refcounted), trims the tool catalog via a single `-t` flag built from the live tool list overridden by `config/tools.yaml`, then execs the real CLI. See [Wiring it into Hermes Agent](#wiring-it-into-hermes-agent). |
-| `config/` | Runtime config versioned with the code instead of living in some home dir: `race-models.yaml` (models source of truth) and `race_proxy.local.yaml` (listener/timeout, points at the models file). See [Runtime config](#runtime-config-race-modelsyaml--race_proxylocalyaml). Secret keys never live here. |
+| `install.sh` | Single-command installer: copies the repo's runtime files into `HERMES_HOME` (default `~/.hermes/hermes-race-proxy/`), generates the two per-machine configs, wires a `hermes` shim + shell alias. Prunes files no longer tracked and installs only `README.md` from the docs. Works on macOS + Linux, Bash + Zsh. |
+| `hermes-warmup.sh` | The launcher every `hermes` invocation runs through: starts both proxies (refcounted, torn down at last exit), syncs MCP enable/disable from `config/tools.yaml`, builds the trimmed `-t` toolset union, then runs the real CLI. |
+| `race_proxy_compaction.py` | Compaction entrypoint: long timeout, port 8977. Config is `config/race_proxy_compaction.local.yaml`. |
+| `race_proxy_toolchain.py` | Toolchain entrypoint: short timeout, port 8978. Config is `config/race_proxy_toolchain.local.yaml`. |
+| `config/` | Runtime config versioned with the code: `race-models.yaml` (models source of truth), `tools.yaml` (single tool/MCP policy), and the two generated `*.local.yaml` listener/timeout files. Secret keys never live here. |
 | `race_proxy_core.py` | Backend/race mechanics: assembling a request, racing backends via their configured `caller`, serving the endpoint. Knows nothing about *why* a response might be broken. |
 | `repairs.py` | *Why* a response might be broken and how to fix it, behind a `RepairStrategy` interface. |
 | `response_contracts.py` | *Was* a 200 response actually usable, per backend, behind a `ProviderContract` interface. See [Was the response actually usable?](#was-the-response-actually-usable-response-contracts) below. |
@@ -179,7 +200,7 @@ auxiliary:
 
 Default behavior with none of the extension points configured is an unchanged plain static `backends:` list in config; everything above is opt-in.
 
-## Runtime config (race-models.yaml + race_proxy.local.yaml)
+## Runtime config (race-models.yaml + race_proxy_compaction.local.yaml)
 
 The model lineup is declared once in `config/race-models.yaml`, anchors-first: top-level `intents:` names what the proxy is for, providers are sub-keys under each, and a provider's endpoint lives exactly once under `providers:`.
 
@@ -208,7 +229,7 @@ intents:
       - nemotron-3.5-lightning-free
 ```
 
-`config/race_proxy.local.yaml` is the listener/timeout file that points at it. Relative `models_file`/`secrets_file` paths resolve against the config file's own directory, so the whole `config/` can be cloned or moved anywhere:
+`config/race_proxy_compaction.local.yaml` is the listener/timeout file that points at it. Relative `models_file`/`secrets_file` paths resolve against the config file's own directory, so the whole `config/` can be cloned or moved anywhere:
 
 ```yaml
 host: 127.0.0.1
@@ -221,7 +242,7 @@ pool_file: ~/.hermes/auth.json
 
 Every backend produced from the anchors above binds to its provider's endpoint, deduped by `(model, endpoint)` so a model shared across anchors isn't raced twice. `intents` anchors and `providers` can be split into separate concerns cleanly (e.g. a provider registry that `alias_of`-shares one endpoint under several names).
 
-**API keys are never committed.** A provider points at a key by name (`api_key_ref: gemini`) and the proxy resolves it at load time, in order: the credential pool (`~/.hermes/auth.json` → `credential_pool.<provider>`, seeded with `hermes auth add <provider> --type api-key --api-key <KEY>`), else a local `secrets_file` map, else `api_key_env` from an environment variable. `race_proxy.local.yaml` is gitignored; commit only the secret-free `race-models.yaml` and this README.
+**API keys are never committed.** A provider points at a key by name (`api_key_ref: gemini`) and the proxy resolves it at load time, in order: the credential pool (`~/.hermes/auth.json` → `credential_pool.<provider>`, seeded with `hermes auth add <provider> --type api-key --api-key <KEY>`), else a local `secrets_file` map, else `api_key_env` from an environment variable. `race_proxy_compaction.local.yaml` is gitignored; commit only the secret-free `race-models.yaml` and this README.
 
 ## Was the response actually usable? (response contracts)
 
@@ -400,9 +421,9 @@ curl -s http://127.0.0.1:8977/health | python3 -m json.tool
 # }
 ```
 
-## Toolset trimming (tool-trim.sh)
+## Toolset trimming (hermes-warmup.sh)
 
-`tool-trim.sh` is the launcher that wraps the real CLI (`hermes-real`): it keeps
+`hermes-warmup.sh` is the launcher that wraps the real CLI (`hermes-real`): it keeps
 the race proxy up (refcounted, torn down when the last session exits) and then
 runs `hermes`. Before it does, it computes a single `-t` union for the call:
 
@@ -441,15 +462,15 @@ auxiliary:
 
 Start the proxy before starting Hermes, and let your process supervisor of choice (systemd, launchd, pm2, whatever) keep it running.
 
-Alternatively, wrap the real CLI with `tool-trim.sh` so a single daemon is shared across interactive shells and background processes — it starts the proxy on the first invocation, builds a trimmed `-t` toolset union from the live tool list plus `config/tools.yaml` overrides, and tears the proxy down when the last one exits (refcounted), passing every CLI arg through untouched (a user-supplied `-t`/`--toolsets` bypasses the trimmer):
+Alternatively, wrap the real CLI with `hermes-warmup.sh` so a single daemon is shared across interactive shells and background processes — it starts the proxy on the first invocation, builds a trimmed `-t` toolset union from the live tool list plus `config/tools.yaml` overrides, and tears the proxy down when the last one exits (refcounted), passing every CLI arg through untouched (a user-supplied `-t`/`--toolsets` bypasses the trimmer):
 
 ```bash
-# ~/.local/bin/hermes  →  thin shim:
-exec "$HOME/<clone>/tool-trim.sh" "$@"
-# ~/.zshrc             →  alias hermes="$HOME/<clone>/tool-trim.sh"
+# ~/.local/bin/hermes  →  thin shim (install.sh creates this symlink):
+exec "$HERMES_HOME/hermes-race-proxy/hermes-warmup.sh" "$@"
+# alias hermes="$HERMES_HOME/hermes-race-proxy/hermes-warmup.sh"   (in your shell rc)
 ```
 
-The real CLI, this repo, and `tool-trim.sh` all live outside the agent's own install tree, so an agent update (which pulls that tree) never touches them — nothing in the agent's source is modified, so there's nothing to revert before an update, and the hook always survives it.
+The real CLI, this repo, and `hermes-warmup.sh` all live outside the agent's own install tree, so an agent update (which pulls that tree) never touches them — nothing in the agent's source is modified, so there's nothing to revert before an update, and the hook always survives it.
 
 Compaction calls in particular send `stream: true` when Hermes has a progress hook active on that call. The proxy answers with a single SSE `delta` chunk carrying the complete response, not a real token-by-token stream, but enough for Hermes's own stream decoder to read real content back instead of aggregating an empty string from a response it couldn't parse as a stream. Verified end to end against the real `openai` Python SDK against a live compaction-shaped request; see [CHANGELOG.md](CHANGELOG.md) for the specific failure this replaced. See `examples/streaming_response_example.py` for a standalone, no-network demo of exactly what bytes go out on the wire either way.
 
@@ -482,7 +503,7 @@ Compaction calls in particular send `stream: true` when Hermes has a progress ho
 | `require_finish_reason` | Set `null`/omit to accept truncated completions. Default `"stop"` rejects `finish_reason: "length"` results (the usual failure mode when a reasoning model gets too small a `max_tokens`). |
 | `backends[].api_key` | An empty string sends an explicit empty `Authorization` header. Some keyless free tiers 401 you the moment they see any recognized bearer-token format. |
 | `backends[].repair_structured_output` | Default `true`. See "Built-in repairs" above. |
-| `backends[].repair_token_starvation` | Default `true`. Retries once with `max_tokens` raised to `MIN_SAFE_MAX_TOKENS` (2000; edit the constant in `race_proxy.py` for a different floor). |
+| `backends[].repair_token_starvation` | Default `true`. Retries once with `max_tokens` raised to `MIN_SAFE_MAX_TOKENS` (2000; edit the constant in `race_proxy_compaction.py`/`race_proxy_core.py` for a different floor). |
 | `backends[].caller` | `"http"` (default) or `"cli"`. See [Reaching a backend](#reaching-a-backend-http-or-cli-callers) above. |
 | `backends[].command` | Only used when `caller: "cli"`. Argv list for the vendor's official CLI. |
 | `models_file` | Path to `race-models.yaml` (resolved relative to this config file). When set and no inline `backends:` is present, every model under the `intents:` anchors becomes the raced backends. |

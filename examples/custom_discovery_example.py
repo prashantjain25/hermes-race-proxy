@@ -68,7 +68,7 @@ NVIDIA_MODELS_URL = f"{NVIDIA_BASE_URL}/models"
 
 # The two always-included opencode.ai/zen backends. Headers match the
 # ones already tuned for this vendor elsewhere in the repo (see
-# race_proxy.local.yaml in the README), some free tiers care about a
+# race_proxy_compaction.local.yaml in the README), some free tiers care about a
 # real-looking User-Agent / Referer.
 FIXED_BACKENDS_CONFIG = [
     {

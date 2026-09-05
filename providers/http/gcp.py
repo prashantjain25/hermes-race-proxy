@@ -12,7 +12,7 @@ Requires a real Google AI Studio / GCP API key, always, there is no
 keyless tier here (unlike opencode.ai/zen's `-free` models).
 
 Verified live in production, not a one-off check: this repo's own
-compaction proxy (race_proxy.local.yaml) has been racing a "gemini"
+compaction proxy (race_proxy_compaction.local.yaml) has been racing a "gemini"
 backend on exactly this base_url/model since before this file existed,
 and /Users/dolphin/.hermes/logs/race-proxy.log shows it winning races
 repeatedly with real 200s and real response bytes (status=200,

@@ -3,6 +3,58 @@
 All notable changes to this project are documented here. Dates are when the
 change landed, not when it was designed.
 
+## 1.2.0 — 2026-09-05
+
+Cross-platform installer, split proxy architecture, and a single-source tool
+policy. This release makes the race proxy installable on any macOS or Linux
+machine in one command and separates fast AI-agent toolchain traffic from slow
+context-compaction calls so they never starve one another.
+
+### Added
+- `install.sh`: a single, idempotent installer that provisions the runtime into
+  `HERMES_HOME` (default `~/.hermes`), generates the two machine-local proxy
+  configs (`race_proxy_compaction.local.yaml`, `race_proxy_toolchain.local.yaml`),
+  prunes files no longer in the repo (so a rename or removal never leaves stale
+  code in an installed tree), and copies only `README.md` in from the docs —
+  every other `*.md` stays out of the runtime install. It wires a `hermes`
+  launcher shim plus a shell alias. Works on macOS and Linux, Bash and Zsh. No
+  dependencies to fetch — no runtime or toolchain to install on the target
+  machine.
+- `hermes-warmup.sh` (successor to `tool-trim.sh`): the single entry point that
+  starts the two race proxies, both refcounted to the life of open sessions and
+  torn down when the last one exits.
+- Two dedicated proxy processes instead of one:
+  - **compaction proxy** — port `8977`, 300s timeout, for large context
+    summarization workloads that genuinely run long.
+  - **toolchain proxy** — port `8978`, 60s timeout, for fast, latency-sensitive
+    AI-agent tool calls (search, skills lookup, text generation). Fails fast and
+    hands off to the client's own fallback chain instead of inheriting a
+    slow-call budget.
+- `config/tools.yaml` as the **single policy source of truth**. It now organizes
+  every toolset into category blocks (`builtin`, `plugin`, `mcp`) keyed by its
+  real toolset name. Flip one `state:` value to `ON`/`OFF` to enable or disable;
+  auto-syncs the MCP server enable/disable flags in the main config.
+- The MCP servers (`exa`, `nimble`, `gemini-image`) now map cleanly into
+  `tools.yaml`, so any MCP-backed tool can be toggled right alongside built-ins.
+
+### Changed
+- Removed the separate allow-list gate files. `tools.yaml` is the only policy;
+  a server is enabled when its row is `state: ON` and reachable.
+- Launch routing: context-compaction and toolchain traffic go to separate
+  processes/ports, so a slow compaction run can no longer delay a fast
+  toolchain call sharing the same pool.
+- The original `race_proxy.py` is replaced by the two split entrypoints;
+  `race_proxy_toolchain.py` keeps its name and `race_proxy_compaction.py`
+  (previously configured as `race_proxy.local.yaml`) is now its own
+  `race_proxy_compaction.local.yaml`, matching the toolchain pair.
+
+### Removed
+- Standalone gate/swap helper scripts; their job is now done by the launcher +
+  `tools.yaml`.
+- `tool-trim.sh`, superseded by `hermes-warmup.sh`.
+- `race_proxy.py`, the single-process entrypoint, superseded by the
+  `_compaction` / `_toolchain` split.
+
 ## 1.1.0 — 2026-09-04
 
 Toolset trimming ships. The `hermes` launcher now trims the eager tool-schema

@@ -21,7 +21,7 @@ race_proxy.py used before this split, specifically so an existing
 working with zero edits. The code-level default timeout is unchanged
 too (90s, race_proxy_core.DEFAULT_TIMEOUT) — a real compaction
 deployment typically overrides this explicitly in its config file
-(e.g. ``timeout: 300`` in race_proxy.local.yaml) rather than relying
+(e.g. ``timeout: 300`` in race_proxy_compaction.local.yaml) rather than relying
 on the code default, since 700+ second real observed latencies (see
 above) need a config-level override regardless of which entrypoint
 serves the request. Only ``auxiliary.mcp`` / ``auxiliary.skills_hub``
