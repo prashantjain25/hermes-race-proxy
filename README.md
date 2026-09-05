@@ -1,21 +1,39 @@
 # hermes-race-proxy
 
-A zero-dependency, OpenAI-compatible local **LLM race proxy** for macOS and
-Linux. It fans one `/v1/chat/completions` request out to several providers at
-once and returns whichever answers first with a usable result — plus a launcher
-that wires it into any agent CLI and trims the eager tool-schema payload off
-every model call. Works with any OpenAI-compatible client (curl, LangChain, the
-OpenAI SDK, agent frameworks); the [60-second install](#quickstart-60-seconds)
-is a single `install.sh` with no runtime or toolchain to fetch on the target.
-Designed for small machines (ARM64 SBCs and Apple Silicon alike) and for
-low-memory installs where a lean Python runtime already exists.
+**Cut your LLM token cost and slash response latency** by sending every
+`/v1/chat/completions` request to several OpenAI-compatible providers at once and
+taking the **fastest usable answer** — not a sequential fallback chain.
 
-**What problem it solves:** free/local LLM tiers are flaky — they 400, return
-empty reasoning-budget answers, or flap between 200/503 minute to minute.
-Racing several of them means one model's bad day never takes the whole pipeline
-down, and a paid model's budget is held for calls that genuinely need it.
+Why this pays for itself:
+
+- **Speed.** While a fallback chain waits out the primary's full timeout before
+  trying the next model, `race-proxy` fires all your backends in parallel and
+  returns whoever answers first. Worst case you're bound by your slowest
+  backend's timeout, not the sum of them. Also folds the agent CLI's eager
+  tool-schema payload off every main-model call (tens of thousands of input
+  tokens trimmed).
+- **Cost.** Free and local LLM tiers are fast and cheap but flaky — they 400,
+  return empty reasoning-budget answers, or flap between 200/503 minute to
+  minute. Racing them means one provider's bad day never stalls the request, and
+  your **paid model's tokens are held for calls that genuinely need them** —
+  cheap models absorb the routine traffic. No SaaS, no resale, no token markup:
+  **bring your own keys**, pay providers directly.
+- **Reliability.** An HTTP 200 isn't the same as "it answered." The proxy
+  rejects empty reasoning-budget replies, safety-filter blocks, and streaming
+  leaks before they can win (response contracts), and auto-repairs
+  structured-output rejection and token starvation without per-vendor string
+  matching.
+
+**One-command install, zero dependency on the target.** `./install.sh --commit`
+provisions a self-contained runtime under `~/.hermes`, generates the per-machine
+configs, and wires a `hermes` shim + shell alias — no runtime or toolchain to
+fetch. macOS and Linux, Bash and Zsh, ARM64 SBCs and Apple Silicon alike. Works
+with any OpenAI-compatible client — curl, LangChain, the OpenAI SDK, any agent
+CLI — just change the base URL.
 
 **Contents**
+- [Is this for me?](#is-this-for-me)
+- [How this is different](#how-this-is-different)
 - [Features](#features)
 - [Quickstart (60 seconds)](#quickstart-60-seconds)
 - [How the race works](#how-the-race-works)
@@ -34,6 +52,36 @@ down, and a paid model's budget is held for calls that genuinely need it.
 - [Extending: custom repairs / discovery / providers](#extending-custom-repairs--discovery--providers)
 - [Known limitations](#known-limitations)
 - [Contributing / License](#contributing--license)
+
+## Is this for me?
+
+- **You want to cut LLM API cost** without rewriting your code → yes. Point an
+  OpenAI-compatible client at `http://127.0.0.1:8977/v1`; the proxy swaps in
+  each model's real name and races cheap/free/local backends so paid-model tokens
+  are reserved for calls that need them.
+- **You're tired of one flaky provider stalling your whole app** → yes. Racing
+  means one backend's 503/empty-answer/rate-limit doesn't block the response;
+  someone else wins instead.
+- **You want the fastest model without hard-coding which one** → yes. The race
+  takes whichever configured backend answers first with usable content.
+- **You need a centralized LLM gateway with multi-tenant auth, admin dashboards,
+  virtual keys, and team spend tracking** → **no.** This is a lean local proxy,
+  not a hosted SaaS gateway. Use LiteLLM/gateway for that. This repo's value is
+  the opposite: small, zero-dependency, self-contained, survives agent updates.
+- **You run on a small ARM64 Linux box or Apple Silicon with limited memory** →
+  yes. No runtime to fetch; runs where a lean Python environment already exists.
+
+## How this is different
+
+| | Race proxy (this repo) | Sequential fallback chain (LiteLLM router, hand-rolled) | Hosted gateway (SaaS) |
+|---|---|---|---|
+| Request latency | **Fastest backend wins, in parallel** | Primary + each fallback serialized | Fastest provider, but you route keys through them |
+| Handles a flaky free tier | **Races past it**, another wins | Waits out its timeout first | Depends on their pool |
+| Winner validation | **Rejects empty/broken 200s before they win** | Usually none | Usually none |
+| Token cost control | Cheap/local models absorb routine traffic, paid held for high-stakes | Manual fallback order | Their routing |
+| Where it runs | **Local, your machine**, zero deps | In-process or proxy | Their cloud |
+| Keys / saas markup | **Bring your own, no markup** | BYOK | Resells, marks up |
+| Footprint | Small, install.sh, no toolchain | Varies | N/A (networked) |
 
 ## Features
 
