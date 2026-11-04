@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Dates are when the
 change landed, not when it was designed.
 
+## Unreleased
+
+### Removed
+- Withdrew `config/tools.yaml` and launcher-managed toolset trimming and MCP
+  enablement because Hermes now provides tool management through its CLI.
+  The launcher forwards arguments unchanged; configure tools with Hermes.
+
 ## 1.2.0 — 2026-09-05
 
 Cross-platform installer, split proxy architecture, and a single-source tool

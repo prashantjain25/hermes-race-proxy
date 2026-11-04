@@ -9,9 +9,7 @@ Why this pays for itself:
 - **Speed.** While a fallback chain waits out the primary's full timeout before
   trying the next model, `race-proxy` fires all your backends in parallel and
   returns whoever answers first. Worst case you're bound by your slowest
-  backend's timeout, not the sum of them. Also folds the agent CLI's eager
-  tool-schema payload off every main-model call (tens of thousands of input
-  tokens trimmed).
+  backend's timeout, not the sum of them.
 - **Cost.** Free and local LLM tiers are fast and cheap but flaky — they 400,
   return empty reasoning-budget answers, or flap between 200/503 minute to
   minute. Racing them means one provider's bad day never stalls the request, and
@@ -46,7 +44,6 @@ CLI — just change the base URL.
 - [Providers and pooling (N providers x M models)](#providers-and-pooling-n-providers-x-m-models)
 - [Built-in repairs (structured-output, token-starvation)](#built-in-repairs-structured-output-token-starvation)
 - [Connection pooling](#connection-pooling)
-- [Toolset trimming (hermes-warmup.sh)](#toolset-trimming-hermes-warmupsh)
 - [Wiring it into Hermes Agent](#wiring-it-into-hermes-agent)
 - [Config reference](#config-reference)
 - [Extending: custom repairs / discovery / providers](#extending-custom-repairs--discovery--providers)
@@ -101,18 +98,7 @@ starvation (retry with `max_tokens` raised to a safe floor). Providers, callers,
 and startup discovery are **pluggable** — one file per vendor transport (HTTP or
 CLI), a pool builder for N providers x M models, and a discovery policy you own.
 
-**Live toolset trimming.** `hermes-warmup.sh` wraps `hermes` (the real CLI), starts
-the race proxy (refcounted, torn down when the last session exits), and computes
-a single `-t` union from hermes's own live tool list overridden by
-`config/tools.yaml` (`state: ON` forces a toolset in, `OFF` forces it out).
-Because `-t` is exclusive and eager tool schemas dominate a cold prompt, the trim
-drops thousands of input tokens off every main-model call (around 20% at the
-default union, ~80% trimmed to `terminal` alone; see the benchmark in the release
-notes). A user passing their own `-t`/`--toolsets` bypasses the trimmer entirely.
-
-Both halves are **update-immune**: `hermes-warmup.sh`, the proxy, and the configs all
-live outside the `hermes-agent` git tree, so `hermes update` never modifies or
-reverts them, and nothing in the agent's source is touched.
+**Hermes tool selection.** The launcher starts the proxies and forwards arguments unchanged. Manage toolsets and MCP servers with Hermes itself.
 
 ## Quickstart (60 seconds)
 
@@ -227,10 +213,10 @@ Nothing about the split changes what `race_proxy_core.py` does; it's the same ra
 | File | What it is |
 |---|---|
 | `install.sh` | Single-command installer: copies the repo's runtime files into `HERMES_HOME` (default `~/.hermes/hermes-race-proxy/`), generates the two per-machine configs, wires a `hermes` shim + shell alias. Prunes files no longer tracked and installs only `README.md` from the docs. Works on macOS + Linux, Bash + Zsh. |
-| `hermes-warmup.sh` | The launcher every `hermes` invocation runs through: starts both proxies (refcounted, torn down at last exit), syncs MCP enable/disable from `config/tools.yaml`, builds the trimmed `-t` toolset union, then runs the real CLI. |
+| `hermes-warmup.sh` | Starts both proxies (refcounted) and forwards CLI arguments to Hermes unchanged. |
 | `race_proxy_compaction.py` | Compaction entrypoint: long timeout, port 8977. Config is `config/race_proxy_compaction.local.yaml`. |
 | `race_proxy_toolchain.py` | Toolchain entrypoint: short timeout, port 8978. Config is `config/race_proxy_toolchain.local.yaml`. |
-| `config/` | Runtime config versioned with the code: `race-models.yaml` (models source of truth), `tools.yaml` (single tool/MCP policy), and the two generated `*.local.yaml` listener/timeout files. Secret keys never live here. |
+| `config/` | Runtime config: `race-models.yaml` and the generated `*.local.yaml` listener/timeout files. Secret keys never live here. |
 | `race_proxy_core.py` | Backend/race mechanics: assembling a request, racing backends via their configured `caller`, serving the endpoint. Knows nothing about *why* a response might be broken. |
 | `repairs.py` | *Why* a response might be broken and how to fix it, behind a `RepairStrategy` interface. |
 | `response_contracts.py` | *Was* a 200 response actually usable, per backend, behind a `ProviderContract` interface. See [Was the response actually usable?](#was-the-response-actually-usable-response-contracts) below. |
@@ -469,32 +455,6 @@ curl -s http://127.0.0.1:8977/health | python3 -m json.tool
 # }
 ```
 
-## Toolset trimming (hermes-warmup.sh)
-
-`hermes-warmup.sh` is the launcher that wraps the real CLI (`hermes-real`): it keeps
-the race proxy up (refcounted, torn down when the last session exits) and then
-runs `hermes`. Before it does, it computes a single `-t` union for the call:
-
-    base     = live enabled toolsets + MCP servers, from `hermes tools list`
-    override = config/tools.yaml   (state: ON -> force in,  OFF -> force out)
-    result   = (base + forced-in) - forced-out, one sorted, comma-joined -t flag
-
-Because `-t` is exclusive, the union always starts from hermes's own live list.
-That keeps it update-immune in both directions: `hermes update` auto-adds new
-toolsets with hermes's default state (the trim never has to chase the catalog),
-and the YAML only grows when you want a state that differs from a default. A
-`state: OFF` row never reaches the flag; flip a row to `ON` and it is force-in.
-Toolsets are the control unit — `state` toggles a whole toolset, not individual
-tools — and MCP servers are keyed by their server name (`exa`), not the docs'
-`mcp-<server>` form (on this install `-t "exa"` works, `-t "mcp-exa"` does not).
-A user-supplied `-t`/`--toolsets` bypasses the YAML entirely.
-
-The payoff is on the main model's cold prompt, where eager tool schemas dominate
-the input budget. Measured on `claude-sonnet-5`: the default 13-toolset union is
-around 22.5-24K input tokens, trimming the non-essential `delegation`/`cronjob`/
-`browser` toolsets drops it to ~19.3K, and a `terminal`-only set is ~4.8K. See
-the full benchmark table in [CHANGELOG.md](CHANGELOG.md).
-
 ## Wiring it into Hermes Agent
 
 Point an auxiliary task's `base_url` at the proxy instead of the real provider:
@@ -510,7 +470,7 @@ auxiliary:
 
 Start the proxy before starting Hermes, and let your process supervisor of choice (systemd, launchd, pm2, whatever) keep it running.
 
-Alternatively, wrap the real CLI with `hermes-warmup.sh` so a single daemon is shared across interactive shells and background processes — it starts the proxy on the first invocation, builds a trimmed `-t` toolset union from the live tool list plus `config/tools.yaml` overrides, and tears the proxy down when the last one exits (refcounted), passing every CLI arg through untouched (a user-supplied `-t`/`--toolsets` bypasses the trimmer):
+Alternatively, use `hermes-warmup.sh` to start the refcounted proxies and forward CLI arguments unchanged:
 
 ```bash
 # ~/.local/bin/hermes  →  thin shim (install.sh creates this symlink):

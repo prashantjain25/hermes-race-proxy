@@ -6,8 +6,7 @@
 # (race_proxy.local.yaml + race_proxy_toolchain.local.yaml) from the tracked
 # race-models.yaml when absent, and wires a `hermes` shim + shell alias so every
 # invocation starts the two race proxies (compaction :8977 / toolchain :8978),
-# syncs MCP enable/disable from config/tools.yaml, trims the -t toolset union,
-# and delegates to the real hermes. Idempotent: safe to re-run.
+# and delegates to the real hermes, which manages its own tools. Idempotent: safe to re-run.
 #
 # Usage:  ./install.sh [--hermes-home <dir>] [--commit] [--uninstall]
 #   --hermes-home <dir>/HERMES_HOME   install location (default ~/.hermes)
@@ -97,7 +96,7 @@ if [ "${#FILES[@]}" -eq 0 ]; then
          providers/http/gcp.py providers/http/nvidia_build.py providers/http/ollama.py
          providers/http/opencode.py providers/http/openrouter.py providers/pool.py
          race_proxy_compaction.py race_proxy_core.py race_proxy_toolchain.py
-         repairs.py response_contracts.py wire_format.py hermes-warmup.sh config/tools.yaml
+         repairs.py response_contracts.py wire_format.py hermes-warmup.sh
          config/race-models.yaml examples/race_proxy.example.yaml LICENSE)
 fi
 echo "  ($(_count "$SOURCE_DIR") files in source repo, ${#FILES[@]} to install)"

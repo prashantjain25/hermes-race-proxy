@@ -2,10 +2,8 @@
 # hermes-warmup.sh -- the single entry point that wraps every `hermes`
 # invocation. It (1) starts the two race proxies -- compaction (:8977, 300s,
 # slow big context-summaries) and toolchain (:8978, 60s, mcp/skills_hub/title-
-# gen, fail-fast) -- both refcounted to the lives of open sessions, (2) syncs
-# config.yaml's mcp_servers.*.enabled from the single policy source
-# config/tools.yaml, and (3) builds the -t toolset union from the same file so
-# the tool schema the model sees stays minimal. The real hermes is never
+# gen, fail-fast) -- both refcounted to the lives of open sessions.
+# Hermes manages toolsets and MCP configuration itself. The real hermes is never
 # modified, so `hermes update` stays clean; all runtime state lives under
 # ~/.hermes, and all code/config lives in this repo. See each function's
 # 2-line comment for its job.
@@ -14,7 +12,6 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RACE_PROXY_DIR="$SCRIPT_DIR"
-TOOLS_CONFIG="$RACE_PROXY_DIR/config/tools.yaml"
 
 # --- Proxy A: compaction (slow, 300s). ---
 COMP_CONFIG="$RACE_PROXY_DIR/config/race_proxy_compaction.local.yaml"
@@ -36,7 +33,6 @@ TOOL_HEALTH="http://127.0.0.1:8978/health"
 RACE_PROXY_REFCOUNT="$HOME/.hermes/race_proxy.refcount"
 RACE_PROXY_LOCKDIR="$HOME/.hermes/race_proxy.lock"
 
-HERMES_CONFIG_YAML="$HOME/.hermes/config.yaml"
 PYTHON_BIN="$HOME/.hermes/hermes-agent/venv/bin/python"
 REAL_HERMES="$HOME/.local/bin/hermes-real"
 
@@ -110,93 +106,10 @@ _stop_proxies() {
   _release_lock
 }
 
-# --- State ON? Recognizes ON/on/true/True/1/yes. ---
-_state_yes() {
-  case "$1" in
-    ON|on|true|True|TRUE|1|yes) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# --- Sync mcp_servers.*.enabled in config.yaml from tools.yaml `mcp` block. ---
-# Only writes when a flag differs; means "flip OFF in tools.yaml to disable".
-sync_mcp() {
-  [ -f "$TOOLS_CONFIG" ] || return 0
-  local plan
-  plan="$("$PYTHON_BIN" -c "
-import yaml,os,json
-cfg=yaml.safe_load(open('$HERMES_CONFIG_YAML')) or {}
-tools=yaml.safe_load(open('$TOOLS_CONFIG')) or {}
-mcp=tools.get('toolsets',{}).get('mcp',{}) or {}
-wanted={}
-for name,cfgrow in (cfg.get('mcp_servers',{}) or {}).items():
-    row=mcp.get(name)
-    state=(row or {}).get('state') if isinstance(row,dict) else 'OFF'
-    on=state in (True,'ON','on','true','True','TRUE','1')
-    cur=bool(cfgrow.get('enabled')) if cfgrow else True
-    if on!=cur: wanted[name]=str(on).lower()
-print(json.dumps(wanted))
-")"
-  [ -z "$plan" ] || [ "$plan" = "{}" ] && return 0
-  echo "$plan" | "$PYTHON_BIN" -c "
-import json,sys
-for n,v in json.load(sys.stdin).items(): print(n,v)
-" | while read -r name val; do
-    "$REAL_HERMES" config set "mcp_servers.${name}.enabled" "$val" >/dev/null 2>&1
-  done
-}
-
-# --- Echo the -t union, or return 1 to bypass (user passed their own -t). ---
-# Base = live enabled toolsets + MCP servers; tools.yaml overrides ON/OFF.
-build_toolsets() {
-  for _a in "$@"; do
-    [ "$_a" = "-t" ] || [ "$_a" = "--toolsets" ] && return 1
-  done
-  local out base names n
-  out="$("$REAL_HERMES" tools list --platform cli 2>/dev/null)"
-  base="$(awk '
-    /^MCP servers:/ {mcp=1; next}
-    /^[[:space:]]*$/ {mcp=0; next}
-    {
-      if (!mcp && match($0, /enabled[[:space:]]+[A-Za-z0-9_-]+/)) {
-        s=substr($0,RSTART+7,RLENGTH-7); sub(/^[[:space:]]+/,"",s); sub(/[[:space:]].*$/,"",s); print s
-      }
-      if (mcp && match($0, /^[[:space:]]*[A-Za-z0-9_-]+/)) print $1
-    }' <<< "$out")"
-  [ -z "${base//[[:space:]]/}" ] && [ ! -f "$TOOLS_CONFIG" ] && return 1
-  if [ -f "$TOOLS_CONFIG" ]; then
-    local forced_in="" forced_out="" entrykey state
-    while IFS='|' read -r entrykey state; do
-      [ -z "$entrykey" ] && continue
-      if _state_yes "$state"; then forced_in=" $forced_in $entrykey"; else forced_out=" $forced_out $entrykey"; fi
-    done < <("$PYTHON_BIN" -c "
-import yaml
-d=yaml.safe_load(open('$TOOLS_CONFIG')) or {}
-for block,cats in (d.get('toolsets') or {}).items():
-    if block=='reference': continue
-    for k,v in (cats or {}).items():
-        if isinstance(v,dict): print(f\"{k}|{v.get('state','OFF')}\")
-")
-    names="$base $forced_in"
-    for n in $forced_out; do
-      names=$(printf '%s\n' "$names" | sed -E "s/(^|[[:space:]])${n}([[:space:]]|$)/ /g")
-    done
-  else
-    names="$base"
-  fi
-  echo "$names" | tr ' ' '\n' | sort -u | grep -v '^$' | paste -sd, -
-}
-
 _start_proxies
-sync_mcp
-
-RUN_ARGS=("$@")
-if TOOLSETS=$(build_toolsets "$@") && [ -n "$TOOLSETS" ]; then
-  RUN_ARGS=(-t "$TOOLSETS" "$@")
-fi
 
 # NOT exec: must wait so we can decrement the refcount on exit.
-"$REAL_HERMES" "${RUN_ARGS[@]}"
+"$REAL_HERMES" "$@"
 HERMES_EXIT_CODE=$?
 
 _stop_proxies
